@@ -46,6 +46,7 @@ fi
 cmd='$SPARK_HOME/bin/spark-submit --class $MAIN --driver-memory $JOBSERVER_MEMORY
   --conf "spark.executor.extraJavaOptions=$LOGGING_OPTS"
   --driver-java-options "$GC_OPTS $JAVA_OPTS $LOGGING_OPTS $CONFIG_OVERRIDES"
+  --driver-class-path /data/spark-csv_2.11-1.4.1-SPARK-1.6.2.jar --packages com.databricks:spark-csv_2.11:1.4.1-SPARK-1.6.2
   $@ $appdir/spark-job-server.jar $conffile'
 if [ -z "$JOBSERVER_FG" ]; then
   eval $cmd > $LOG_DIR/server_start.log 2>&1 < /dev/null &
