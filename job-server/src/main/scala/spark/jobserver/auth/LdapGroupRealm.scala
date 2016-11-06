@@ -121,7 +121,7 @@ class LdapGroupRealm extends JndiLdapRealm {
       val fullGroupMemberName = "%s,%s" format (userSearchResult.getName(), searchBase)
       members.filter(entry => {
         entry._2.contains(fullGroupMemberName)
-      }).map(e => e._1)
+      }).keys
     }.flatten.toSet
   }
 
