@@ -154,7 +154,8 @@ object JobServerBuild extends Build {
         expose(8090)
         expose(9999)    // for JMX
         env("MESOS_VERSION", mesosVersion)
-        runRaw("""echo "deb http://repos.mesosphere.io/ubuntu/ trusty main" > /etc/apt/sources.list.d/mesosphere.list && \
+        runRaw("""echo \
+          "deb http://repos.mesosphere.io/ubuntu/ trusty main" > /etc/apt/sources.list.d/mesosphere.list && \
                   apt-key adv --keyserver keyserver.ubuntu.com --recv E56151BF && \
                   apt-get -y update && \
                   apt-get -y install mesos=${MESOS_VERSION} && \
@@ -165,7 +166,8 @@ object JobServerBuild extends Build {
         copy(baseDirectory(_ / "bin" / "server_stop.sh").value, file("app/server_stop.sh"))
         copy(baseDirectory(_ / "bin" / "manager_start.sh").value, file("app/manager_start.sh"))
         copy(baseDirectory(_ / "bin" / "setenv.sh").value, file("app/setenv.sh"))
-        copy(baseDirectory(_ / "config" / "log4j-stdout.properties").value, file("app/log4j-server.properties"))
+        copy(baseDirectory(_ / "config" / "log4j-stdout.properties").value,
+          file("app/log4j-server.properties"))
         copy(baseDirectory(_ / "config" / "docker.conf").value, file("app/docker.conf"))
         copy(baseDirectory(_ / "config" / "docker.sh").value, file("app/settings.sh"))
         // Including envs in Dockerfile makes it easy to override from docker command

@@ -52,7 +52,7 @@ class LdapGroupRealm extends JndiLdapRealm {
   }
 
   private def getEnvironmentParam(jni: JndiLdapContextFactory, param: String): String = {
-    val value = jni.getEnvironment().get(param)
+    val value = jni.getEnvironment.get(param)
     value match {
       case null =>
         //tell user what is missing instead of just throwing a NPE
@@ -67,7 +67,7 @@ class LdapGroupRealm extends JndiLdapRealm {
                                          ldapContextFactory: LdapContextFactory): AuthorizationInfo = {
 
     val username = getAvailablePrincipal(principals).toString
-    val ldapContext = ldapContextFactory.getSystemLdapContext()
+    val ldapContext = ldapContextFactory.getSystemLdapContext
     try {
       queryForAuthorizationInfo(ldapContext, username)
     } finally {
@@ -94,13 +94,13 @@ class LdapGroupRealm extends JndiLdapRealm {
       groupSearchAtts, searchCtls).asScala
 
     groupAnswer.map { sr2 =>
-      logger.debug("Checking members of group [%s]", sr2.getName())
-      sr2.getName() -> getMembers(sr2)
+      logger.debug("Checking members of group [%s]", sr2.getName)
+      sr2.getName -> getMembers(sr2)
     }.toMap
   }
 
   private def getMembers(sr: SearchResult): Set[String] = {
-    val attrs: Attributes = sr.getAttributes()
+    val attrs: Attributes = sr.getAttributes
 
     if (attrs != null) {
       LdapUtils.getAllAttributeValues(attrs.get("member")).asScala.toSet
@@ -118,7 +118,7 @@ class LdapGroupRealm extends JndiLdapRealm {
     val members = retrieveGroups(ldapContext)
 
     answer.map { userSearchResult =>
-      val fullGroupMemberName = "%s,%s" format (userSearchResult.getName(), searchBase)
+      val fullGroupMemberName = "%s,%s" format (userSearchResult.getName, searchBase)
       members.filter(entry => {
         entry._2.contains(fullGroupMemberName)
       }).keys

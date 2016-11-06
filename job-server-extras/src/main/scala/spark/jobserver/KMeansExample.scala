@@ -21,8 +21,8 @@ object KMeansExample extends SparkJob with NamedRddSupport {
 
   /**
    * Assume that the job succeeds
-   * @param sc
-   * @param config
+   * @param sc spark context
+   * @param config spark configuration
    * @return Always return SparkJobValid as this example will not do error checking
    */
   override def validate(sc: SparkContext, config: Config): SparkJobValidation = SparkJobValid
@@ -43,7 +43,7 @@ object KMeansExample extends SparkJob with NamedRddSupport {
       //limit forces
       val data = sqlContext.read.parquet("s3n://us-east-1.elasticmapreduce.samples/flightdata/input")
         .limit(5E6.toInt)
-      val intCols = data.dtypes.filter(_._2 == "IntegerType").map(_._1).map(data.col(_))
+      val intCols = data.dtypes.filter(_._2 == "IntegerType").map(_._1).map(data.col)
       val intDF = data.select(intCols: _*).repartition(50)
       //just choose some reasonable na value
       val noNADF = intDF.na.fill(0)

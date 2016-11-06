@@ -5,9 +5,10 @@ import akka.pattern.ask
 import akka.util.Timeout
 import com.typesafe.config.ConfigFactory
 import org.joda.time.DateTime
+
 import scala.concurrent.Await
 import spark.jobserver._
-import spark.jobserver.io.{BinaryType, JobFileDAO}
+import spark.jobserver.io.{BinaryType, JobSqlDAO}
 
 /**
  * A stress test for launching many jobs within a job context
@@ -35,7 +36,7 @@ object SingleContextJobStress extends App with TestJarFinder {
 
   val jobDaoDir = jobDaoPrefix + DateTime.now.toString()
   val jobDaoConfig = ConfigFactory.parseMap(Map("spark.jobserver.filedao.rootdir" -> jobDaoDir).asJava)
-  val dao = new JobFileDAO(jobDaoConfig)
+  val dao = new JobSqlDAO(jobDaoConfig)
 
   val jobManager = system.actorOf(Props(classOf[JobManagerActor], dao, "c1", "local[4]", config, false))
 
