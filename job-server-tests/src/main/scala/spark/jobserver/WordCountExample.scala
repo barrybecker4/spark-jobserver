@@ -2,10 +2,10 @@ package spark.jobserver
 
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.spark._
-import org.apache.spark.SparkContext._
+import org.apache.spark.sql.SparkSession
 import org.scalactic._
-import scala.util.Try
 
+import scala.util.Try
 import spark.jobserver.api.{SparkJob => NewSparkJob, _}
 
 /**
@@ -19,7 +19,8 @@ import spark.jobserver.api.{SparkJob => NewSparkJob, _}
 object WordCountExample extends SparkJob {
   def main(args: Array[String]) {
     val conf = new SparkConf().setMaster("local[4]").setAppName("WordCountExample")
-    val sc = new SparkContext(conf)
+    val sparkSession = SparkSession.builder.config(conf).getOrCreate()  //new SparkContext(conf)
+    val sc = sparkSession.sparkContext
     val config = ConfigFactory.parseString("")
     val results = runJob(sc, config)
     println("Result is " + results)

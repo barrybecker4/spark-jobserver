@@ -5,6 +5,7 @@ import java.io.File
 import com.typesafe.config.{ConfigRenderOptions, Config, ConfigFactory}
 import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.hive.HiveContext
 import org.apache.spark.{SparkConf, SparkContext}
 import org.scalatest.{BeforeAndAfterAll, Matchers, FunSpec}

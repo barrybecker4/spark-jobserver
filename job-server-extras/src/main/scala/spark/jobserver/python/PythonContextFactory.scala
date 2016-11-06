@@ -84,7 +84,7 @@ trait PythonContextFactory extends SparkContextFactory {
     * Partial implementation of makeContext to avoid repetition in the ContextFactory implementations.
     * Does the generic setup tasks and delegates to doMakeContext
     * @param sparkConf the Spark Context configuration.
-    * @param contextConfig
+    * @param contextConfig spark context configuration
     * @param contextName the name of the context to start
     * @return the newly created context.
     */

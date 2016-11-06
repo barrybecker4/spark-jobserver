@@ -1,6 +1,7 @@
 package spark.jobserver.context
 
 import com.typesafe.config.Config
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.{SparkConf, SparkContext}
 import org.joda.time.DateTime
 import org.scalactic._
@@ -116,9 +117,12 @@ class DefaultSparkContextFactory extends ScalaContextFactory {
   type C = SparkContext with ContextLike
 
   def makeContext(sparkConf: SparkConf, config: Config,  contextName: String): C = {
-    val sc = new SparkContext(sparkConf) with ContextLike {
-      def sparkContext: SparkContext = this
-    }
+    val sparkSession = SparkSession.builder.config(sparkConf).getOrCreate()
+    val sc = sparkSession.sparkContext
+
+    //val sc = new SparkContext(sparkConf) with ContextLike {
+    //  def sparkContext: SparkContext = this
+    //}
     for ((k, v) <- SparkJobUtils.getHadoopConfig(config)) sc.hadoopConfiguration.set(k, v)
     sc
   }

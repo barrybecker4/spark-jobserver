@@ -3,11 +3,12 @@ package spark.jobserver
 import akka.actor.ActorSystem
 import akka.testkit.{ImplicitSender, TestKit}
 import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.sql.{Row, SQLContext}
+import org.apache.spark.sql.{Row, SQLContext, SparkSession}
 import org.apache.spark.sql.types._
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 import org.scalatest.{BeforeAndAfter, BeforeAndAfterAll, FunSpecLike, Matchers}
+
 import scala.concurrent.duration.{FiniteDuration, _}
 
 /**
@@ -18,17 +19,22 @@ class NamedObjectsSpec extends TestKit(ActorSystem("NamedObjectsSpec")) with Fun
     with ImplicitSender with Matchers with BeforeAndAfter with BeforeAndAfterAll {
 
   implicit def rddPersister: NamedObjectPersister[NamedRDD[Int]] = new RDDPersister[Int]
-  implicit def dataFramePersister = new DataFramePersister
+  implicit def dataFramePersister: DataFramePersister = new DataFramePersister
 
   private var sc : SparkContext = _
   private var sqlContext : SQLContext = _
   private var namedObjects: NamedObjects = _
   
   override def beforeAll {
-    sc = new SparkContext("local[3]", getClass.getSimpleName, new SparkConf)
-    sqlContext = new SQLContext(sc)
+    //sc = new SparkContext("local[3]", getClass.getSimpleName, new SparkConf)
+    val sparkSession = SparkSession.builder.
+      master("local[3]")
+      .appName(getClass.getSimpleName)
+      .getOrCreate()
+    sc = sparkSession.sparkContext
+    sqlContext = sparkSession.sqlContext //new SQLContext(sc)
     namedObjects = new JobServerNamedObjects(system)
-    namedObjects.getNames.foreach { namedObjects.forget(_) }
+    namedObjects.getNames().foreach { namedObjects.forget(_) }
   }
   
   val struct = StructType(
@@ -140,13 +146,15 @@ class NamedObjectsSpec extends TestKit(ActorSystem("NamedObjectsSpec")) with Fun
       val df = sqlContext.createDataFrame(rows, struct)
       val rdd2 = sc.parallelize(Seq(4, 5, 6))
 
-      namedObjects.getOrElseCreate("o1", NamedDataFrame(df, true, StorageLevel.MEMORY_AND_DISK)) should equal(NamedDataFrame(df, true, StorageLevel.MEMORY_AND_DISK))
+      val lhs = namedObjects.getOrElseCreate("o1", NamedDataFrame(df, true, StorageLevel.MEMORY_AND_DISK))
+      val rhs = NamedDataFrame(df, true, StorageLevel.MEMORY_AND_DISK)
+      lhs should equal(rhs)
       namedObjects.update("o1", NamedRDD(rdd2, true, StorageLevel.MEMORY_ONLY))
       namedObjects.get("o1") should equal(Some(NamedRDD(rdd2, true, StorageLevel.MEMORY_ONLY)))
     }
 
     it("should include underlying exception when error occurs") {
-      def errorFunc = {
+      def errorFunc: NamedDataFrame = {
         throw new IllegalArgumentException("boo!")
         NamedDataFrame(sqlContext.createDataFrame(rows, struct), false, StorageLevel.MEMORY_ONLY)
       }

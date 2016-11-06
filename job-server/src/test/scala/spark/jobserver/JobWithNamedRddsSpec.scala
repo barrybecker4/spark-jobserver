@@ -3,16 +3,20 @@ package spark.jobserver
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.storage.StorageLevel
 import java.util.concurrent.TimeoutException
-
+import org.apache.spark.sql.SparkSession
 import scala.concurrent.duration._
-
 import org.apache.spark.rdd.RDD
 import com.typesafe.config.Config
 import spark.jobserver.common.akka.AkkaTestUtils
 
 class JobWithNamedRddsSpec extends JobSpecBase(JobManagerSpec.getNewSystem) {
 
-  val sc = new SparkContext("local[4]", getClass.getSimpleName, new SparkConf)
+  //val sc = new SparkContext("local[4]", getClass.getSimpleName, new SparkConf)
+  val sparkSession = SparkSession.builder.
+    master("local[4]")
+    .appName(getClass.getSimpleName)
+    .getOrCreate()
+  val sc = sparkSession.sparkContext
 
   class TestJob1 extends SparkJob with NamedRddSupport {
     def validate(sc: SparkContext, config: Config): SparkJobValidation = SparkJobValid

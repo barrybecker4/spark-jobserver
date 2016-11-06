@@ -1,11 +1,13 @@
 package spark.jobserver
 
 import com.typesafe.config.{Config, ConfigFactory}
-import java.util.{Random, Date}
-import org.apache.spark._
-import org.scalactic._
-import scala.util.Try
+import java.util.{Date, Random}
 
+import org.apache.spark._
+import org.apache.spark.sql.SparkSession
+import org.scalactic._
+
+import scala.util.Try
 import spark.jobserver.api._
 
 /**
@@ -28,8 +30,10 @@ object LongPiJob extends api.SparkJob {
 
 
   def main(args: Array[String]) {
+
     val conf = new SparkConf().setMaster("local[4]").setAppName("LongPiJob")
-    val sc = new SparkContext(conf)
+    val sessionContext = SparkSession.builder.config(conf).getOrCreate() //new SparkContext(conf)
+    val sc = sessionContext.sparkContext
     val env = new JobEnvironment {
       def jobId: String = "abcdef"
       //scalastyle:off
