@@ -21,7 +21,7 @@ object SqlLoaderJob extends SparkSqlJob {
   def runJob(sql: SQLContext, config: Config): Any = {
     import sql.implicits._
     val addrRdd = sql.sparkContext.parallelize(addresses)
-    addrRdd.toDF().registerTempTable("addresses")
+    addrRdd.toDF().createOrReplaceTempView("addresses")
     addrRdd.count()
   }
 }

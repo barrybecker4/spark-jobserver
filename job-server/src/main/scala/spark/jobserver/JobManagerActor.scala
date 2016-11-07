@@ -163,7 +163,7 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
     }
 
     case SparkContextStatus => {
-      if (jobContext.sparkContext == null) {
+      if (jobContext.sparkSession == null) {
         sender ! SparkContextDead
       } else {
         try {
@@ -178,7 +178,7 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
       }
     }
     case GetContextConfig => {
-      if (jobContext.sparkContext == null) {
+      if (jobContext.sparkSession == null) {
         sender ! SparkContextDead
       } else {
         try {
