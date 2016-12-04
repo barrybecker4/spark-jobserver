@@ -5,7 +5,6 @@ import akka.pattern.ask
 import akka.util.Timeout
 import com.typesafe.config.ConfigFactory
 import org.joda.time.DateTime
-
 import scala.concurrent.Await
 import spark.jobserver._
 import spark.jobserver.io.{BinaryType, JobSqlDAO}

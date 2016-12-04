@@ -1,7 +1,6 @@
 package spark.jobserver.context
 
 import com.typesafe.config.Config
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.{SparkConf, SparkContext}
 import org.joda.time.DateTime
 import org.scalactic._
@@ -106,7 +105,7 @@ trait ScalaContextFactory extends SparkContextFactory {
 }
 
 /**
- * The default factory creates a standard SparkSession.
+ * The default factory creates a standard SparkContext.
  * In the future if we want to add additional methods, etc. then we can have additional factories.
  * For example a specialized SparkContext to manage RDDs in a user-defined way.
  *
@@ -117,10 +116,8 @@ class DefaultSparkContextFactory extends ScalaContextFactory {
   type C = SparkContext with ContextLike
 
   def makeContext(sparkConf: SparkConf, config: Config,  contextName: String): C = {
-    val ss = SparkSession.builder.config(sparkConf).getOrCreate()
-
     val sc = new SparkContext(sparkConf) with ContextLike {
-      def sparkSession = ss
+      def sparkContext: SparkContext = this
     }
     for ((k, v) <- SparkJobUtils.getHadoopConfig(config)) sc.hadoopConfiguration.set(k, v)
     sc

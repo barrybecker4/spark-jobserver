@@ -163,7 +163,7 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
     }
 
     case SparkContextStatus => {
-      if (jobContext.sparkSession == null) {
+      if (jobContext.sparkContext == null) {
         sender ! SparkContextDead
       } else {
         try {
@@ -178,7 +178,7 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
       }
     }
     case GetContextConfig => {
-      if (jobContext.sparkSession == null) {
+      if (jobContext.sparkContext == null) {
         sender ! SparkContextDead
       } else {
         try {
@@ -225,7 +225,7 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
     if (!lastUploadTimeAndType.isDefined) return failed(NoSuchApplication)
     val (lastUploadTime, binaryType) = lastUploadTimeAndType.get
 
-    val jobId = java.util.UUID.randomUUID().toString()
+    val jobId = java.util.UUID.randomUUID().toString
     val jobContainer = factory.loadAndValidateJob(appName, lastUploadTime,
                                                   classPath, jobCache) match {
       case Good(container)       => container
@@ -339,20 +339,20 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
   protected def wrapInRuntimeException(t: Throwable): RuntimeException = {
     val cause : Throwable = getRootCause(t)
     val e : RuntimeException = new RuntimeException("%s: %s"
-      .format(cause.getClass().getName() ,cause.getMessage))
-    e.setStackTrace(cause.getStackTrace())
-    return e
+      .format(cause.getClass.getName ,cause.getMessage))
+    e.setStackTrace(cause.getStackTrace
+    e
   }
 
   // Gets the very first exception that caused the current exception to be thrown.
   protected def getRootCause(t: Throwable): Throwable = {
     var result : Throwable = t
-    var cause : Throwable = result.getCause()
+    var cause : Throwable = result.getCause
     while(cause != null  && (result != cause) ) {
       result = cause
-      cause = result.getCause()
+      cause = result.getCause
     }
-    return result
+    result
   }
 
   // Use our classloader and a factory to create the SparkContext.  This ensures the SparkContext will use

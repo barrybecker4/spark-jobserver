@@ -1,13 +1,11 @@
 package spark.jobserver
 
 import com.typesafe.config.{Config, ConfigFactory}
-import java.util.{Date, Random}
-
+import java.util.{Random, Date}
 import org.apache.spark._
-import org.apache.spark.sql.SparkSession
 import org.scalactic._
-
 import scala.util.Try
+
 import spark.jobserver.api._
 
 /**
@@ -30,10 +28,8 @@ object LongPiJob extends api.SparkJob {
 
 
   def main(args: Array[String]) {
-
     val conf = new SparkConf().setMaster("local[4]").setAppName("LongPiJob")
-    val sessionContext = SparkSession.builder.config(conf).getOrCreate() //new SparkContext(conf)
-    val sc = sessionContext.sparkContext
+    val sc = new SparkContext(conf)
     val env = new JobEnvironment {
       def jobId: String = "abcdef"
       //scalastyle:off
@@ -94,7 +90,7 @@ object LongPiJob extends api.SparkJob {
     dist <= 1
   }
 
-  private def now(): Long = (new Date()).getTime
+  private def now(): Long = new Date().getTime
 
   private val OneSec = 1000 // in milliseconds
   private def stillHaveTime(startTime: Long, duration: Int): Boolean = (now - startTime) < duration * OneSec

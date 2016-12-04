@@ -2,7 +2,6 @@ package spark.jobserver
 
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.spark._
-import org.apache.spark.sql.SparkSession
 
 /**
  * A very short job for stress tests purpose.
@@ -13,8 +12,7 @@ object VeryShortDoubleJob extends SparkJob {
 
   def main(args: Array[String]) {
     val conf = new SparkConf().setMaster("local[4]").setAppName("VeryShortDoubleJob")
-    val sparkSession = SparkSession.builder.config(conf).getOrCreate() //new SparkContext(conf)
-    val sc = sparkSession.sparkContext
+    val sc = new SparkContext(conf)
     val config = ConfigFactory.parseString("")
     val results = runJob(sc, config)
     println("Result is " + results)

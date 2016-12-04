@@ -1,29 +1,12 @@
 package spark.jobserver
 
-import scala.util.{Failure, Success, Try}
-import com.typesafe.config.ConfigFactory
-import org.apache.spark.sql.{Row, SparkSession}
-import org.apache.spark.sql.hive.HiveContext
-import org.apache.spark.{SparkConf, SparkContext}
-import spark.jobserver.context.{HiveContextFactory, HiveContextLike}
+import com.typesafe.config.{ConfigFactory}
+import org.apache.spark.sql.Row
+import spark.jobserver.context.{HiveContextFactory}
 import spark.jobserver.io.JobDAOActor
 
-class TestHiveContextFactory extends HiveContextFactory {
-  override protected def contextFactory(conf: SparkConf): C = {
-    val sparkSession = SparkSession.builder.config(conf).getOrCreate()
-    val sc = sparkSession.sparkContext
-    //val sc = new SparkContext(conf)
-    Try(new HiveContext(sc) with HiveContextLike) match {
-      case Success(hc) => hc
-      case Failure(e) =>
-        sc.stop
-        throw e
-    }
-  }
-}
-
 object HiveJobSpec extends JobSpecConfig {
-  override val contextFactory = classOf[TestHiveContextFactory].getName
+  override val contextFactory = classOf[HiveContextFactory].getName
 }
 
 class HiveJobSpec extends ExtrasJobSpecBase(HiveJobSpec.getNewSystem) {

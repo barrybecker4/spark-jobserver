@@ -3,18 +3,18 @@ package spark.jobserver.python
 import java.io.File
 
 import com.typesafe.config.Config
-import org.apache.spark.sql.{SQLContext, SparkSession}
+import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.hive.HiveContext
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.{SparkContext, SparkConf}
 import org.apache.spark.api.java.JavaSparkContext
 import org.joda.time.DateTime
-import org.scalactic.{Bad, Good, Or}
+import org.scalactic.{Good, Bad, Or}
 import org.slf4j.LoggerFactory
 import spark.jobserver.util.SparkJobUtils
 import spark.jobserver._
 import spark.jobserver.context.{JobLoadError, LoadingError, SparkContextFactory}
-
 import scala.collection.JavaConverters._
+
 import scala.util.{Failure, Success, Try}
 
 trait PythonContextLike extends ContextLike {
@@ -145,9 +145,7 @@ trait DefaultContextLikeImplementations {
   override lazy val pythonExecutable: String = config.getString("python.executable")
 
   override def setupTasks(): Unit = {
-    for ((k, v) <- SparkJobUtils.getHadoopConfig(config)) {
-      sparkSession.sparkContext.hadoopConfiguration.set(k, v)
-    }
+    for ((k, v) <- SparkJobUtils.getHadoopConfig(config)) sparkContext.hadoopConfiguration.set(k, v)
   }
 }
 
@@ -158,10 +156,9 @@ class PythonSparkContextFactory extends PythonContextFactory {
   override def doMakeContext(sc: SparkContext,
                            contextConfig: Config,
                            contextName: String): JavaSparkContext with PythonContextLike = {
-    val ss = SparkSession.builder.config(sc.getConf).getOrCreate()
     val jsc = new JavaSparkContext(sc) with PythonContextLike with DefaultContextLikeImplementations {
       override val config = contextConfig
-      override val sparkSession = ss
+      override val sparkContext: SparkContext = sc
       override val contextType = classOf[JavaSparkContext].getCanonicalName
     }
     jsc
@@ -184,8 +181,6 @@ class PythonSQLContextFactory extends PythonContextFactory {
       override val config = contextConfig
       override val contextType: String = classOf[SQLContext].getCanonicalName
       override def stop(): Unit = sc.stop()
-
-      override def sparkContext: SparkContext = sc
     }
     jSqlContext
   }
@@ -205,7 +200,6 @@ class PythonHiveContextFactory extends PythonContextFactory {
       override val contextType: String = classOf[HiveContext].getCanonicalName
       override def config: Config = contextConfig
       override def stop(): Unit = sc.stop()
-      override def sparkContext = sc
     }
     jHiveContext
   }

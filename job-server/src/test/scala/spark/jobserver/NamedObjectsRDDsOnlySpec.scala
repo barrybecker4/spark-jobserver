@@ -2,7 +2,6 @@ package spark.jobserver
 
 import akka.actor.ActorSystem
 import akka.testkit.{ImplicitSender, TestKit}
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.storage.StorageLevel
 import org.scalatest.{BeforeAndAfter, BeforeAndAfterAll, FunSpecLike, Matchers}
@@ -15,12 +14,7 @@ import spark.jobserver.common.akka.AkkaTestUtils
 class NamedObjectsRDDsOnlySpec extends TestKit(ActorSystem("NamedObjectsSpec")) with FunSpecLike
     with ImplicitSender with Matchers with BeforeAndAfter with BeforeAndAfterAll {
   
-  //val sc = new SparkContext("local[2]", getClass.getSimpleName, new SparkConf)
-  val sparkSession = SparkSession.builder.
-    master("local[2]")
-    .appName(getClass.getSimpleName)
-    .getOrCreate()
-  val sc = sparkSession.sparkContext
+  val sc = new SparkContext("local[2]", getClass.getSimpleName, new SparkConf)
   val namedObjects: NamedObjects = new JobServerNamedObjects(system)
 
   implicit def rddPersister[T]: RDDPersister[T] = new RDDPersister[T]
@@ -97,7 +91,8 @@ class NamedObjectsRDDsOnlySpec extends TestKit(ActorSystem("NamedObjectsSpec")) 
     it("update() should replace existing RDD") {
       val rdd1 = sc.parallelize(Seq(1, 2, 3))
       val rdd2 = sc.parallelize(Seq(4, 5, 6))
-      namedObjects.getOrElseCreate("rdd", NamedRDD(rdd1, true, StorageLevel.MEMORY_ONLY)) should equal(NamedRDD(rdd1, true, StorageLevel.MEMORY_ONLY))
+      namedObjects.getOrElseCreate("rdd", NamedRDD(rdd1, true, StorageLevel.MEMORY_ONLY)) should equal(
+        NamedRDD(rdd1, true, StorageLevel.MEMORY_ONLY))
       namedObjects.update("rdd", NamedRDD(rdd2, true, StorageLevel.MEMORY_ONLY))
       namedObjects.get("rdd") should equal(Some(NamedRDD(rdd2, true, StorageLevel.MEMORY_ONLY)))
     }
