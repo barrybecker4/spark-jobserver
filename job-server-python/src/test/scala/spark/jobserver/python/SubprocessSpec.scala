@@ -292,7 +292,7 @@ class SubprocessSpec extends FunSpec with Matchers with BeforeAndAfterAll {
       }
       stopGateway(gw2)
     }
-
+    
     it("should have non-zero exit code if passed something as a context which is not a context") {
 
       val jobConfig = ConfigFactory.parseString("""input.strings = ["a", "a", "b"]""")
