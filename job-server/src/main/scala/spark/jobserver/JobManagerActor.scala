@@ -340,7 +340,7 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
     val cause : Throwable = getRootCause(t)
     val e : RuntimeException = new RuntimeException("%s: %s"
       .format(cause.getClass.getName ,cause.getMessage))
-    e.setStackTrace(cause.getStackTrace
+    e.setStackTrace(cause.getStackTrace)
     e
   }
 
