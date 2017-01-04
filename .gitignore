@@ -10,11 +10,7 @@ test-reports/
 *.pyc
 
 # ignore deployment configs
-config/*.conf
-config/*.sh
 config/*.ini
-job-server/config/*.conf
-job-server/config/*.sh
 job-server/config/*.ini
 metastore_db/
 
