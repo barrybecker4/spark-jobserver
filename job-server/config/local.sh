@@ -3,21 +3,21 @@
 DEPLOY_HOSTS="hostname1.net
               hostname2.net"
 
-APP_USER=spark
-APP_GROUP=spark
+APP_USER=mineset
+APP_GROUP=mineset
 JMX_PORT=9999
 # optional SSH Key to login to deploy server
 #SSH_KEY=/path/to/keyfile.pem
 INSTALL_DIR=/home/spark/job-server
 LOG_DIR=/var/log/job-server
 PIDFILE=spark-jobserver.pid
-JOBSERVER_MEMORY=1G
-SPARK_VERSION=2.0.2
-MAX_DIRECT_MEMORY=512M
-SPARK_HOME=/home/spark/spark-2.1.0
+JOBSERVER_MEMORY=4G
+SPARK_VERSION=2.1.0
+MAX_DIRECT_MEMORY=1G
+SPARK_HOME=/home/barrybecker/work/spark-2.1.0
 SPARK_CONF_DIR=$SPARK_HOME/conf
 # Only needed for Mesos deploys
-SPARK_EXECUTOR_URI=/home/spark/spark-1.6.0.tar.gz
+SPARK_EXECUTOR_URI=/home/barrybecker/work/spark-2.1.0.tar.gz
 # Only needed for YARN running outside of the cluster
 # You will need to COPY these files from your cluster to the remote machine
 # Normally these are kept on the cluster in /etc/hadoop/conf
@@ -26,4 +26,4 @@ SPARK_EXECUTOR_URI=/home/spark/spark-1.6.0.tar.gz
 #
 # Also optional: extra JVM args for spark-submit
 # export SPARK_SUBMIT_OPTS+="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5433"
-SCALA_VERSION=2.10.4 # or 2.11.6
+SCALA_VERSION=2.11.6

@@ -10,12 +10,6 @@ test-reports/
 *.pyc
 
 # ignore deployment configs
-config/*.conf
-config/*.sh
-config/*.ini
-job-server/config/*.conf
-job-server/config/*.sh
-job-server/config/*.ini
 metastore_db/
 
 #ignore generated config
@@ -26,3 +20,4 @@ ec2Cluster/
 
 # don't ignore the ec2 config and sh files
 !job-server/config/ec2.sh
+project/project/
