@@ -19,7 +19,7 @@ class ReaperSpec extends TestKit(ActorSystem("ReaperSpec")) with ImplicitSender
   import scala.concurrent.duration._
 
   override def afterAll() {
-    system.terminate()
+    system.shutdown()
   }
 
   describe("Reaper") {

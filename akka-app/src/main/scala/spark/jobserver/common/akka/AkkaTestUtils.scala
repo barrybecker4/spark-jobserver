@@ -21,8 +21,8 @@ object AkkaTestUtils {
 
   def shutdownAndWait(system: ActorSystem) {
     if (system != null) {
-      system.terminate()
-      Await.result(system.whenTerminated, timeout)
+      system.shutdown()
+      system.awaitTermination(timeout)
     }
   }
 }
