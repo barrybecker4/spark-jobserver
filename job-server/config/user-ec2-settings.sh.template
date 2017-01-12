@@ -8,7 +8,7 @@ VPC_ID=
 CLUSTER_NAME=large19Slaves
 INSTANCE_TYPE=r3.large
 NUM_SLAVES=19
-SPARK_VERSION=2.0.2
+SPARK_VERSION=2.1.0
 HADOOP_VERSION=2.6
 SPARK_EC2_BRANCH=branch-1.6
 # Additional options to pass to spark-ec2
