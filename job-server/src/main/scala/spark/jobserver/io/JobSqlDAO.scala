@@ -1,15 +1,18 @@
 package spark.jobserver.io
 
-import java.io.File
+import java.io._
 import java.sql.Timestamp
+import java.util.NoSuchElementException
 import javax.sql.DataSource
 
+import com.typesafe.config.ConfigException.Missing
 import com.typesafe.config.{Config, ConfigFactory, ConfigRenderOptions}
 import org.apache.commons.dbcp.BasicDataSource
 import org.flywaydb.core.Flyway
 import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
 import slick.driver.JdbcProfile
+import spark.jobserver.JobManagerActor.JobKilledException
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
@@ -223,7 +226,7 @@ class JobSqlDAO(config: Config) extends JobDAO with FileCasher {
         60 seconds)
     val startTime = convertDateJodaToSql(jobInfo.startTime)
     val endTime = jobInfo.endTime.map(t => convertDateJodaToSql(t))
-    val errors = jobInfo.error.map(e => e.getMessage)
+    val errors = jobInfo.error.map(e => e.getClass.getName + "::" + e.getMessage)
     val row = (jobInfo.jobId, jobInfo.contextName, jarId, jobInfo.classPath, startTime, endTime, errors)
     if(Await.result(db.run(jobs.insertOrUpdate(row)), 60 seconds) == 0){
       throw new SlickException(s"Could not update ${jobInfo.jobId} in the database")
@@ -259,7 +262,8 @@ class JobSqlDAO(config: Config) extends JobDAO with FileCasher {
           classpath,
           convertDateSqlToJoda(start),
           end.map(convertDateSqlToJoda),
-          err.map(new Throwable(_)))
+          err.map(getThrowable)
+        )
       }
     }
   }
@@ -282,9 +286,28 @@ class JobSqlDAO(config: Config) extends JobDAO with FileCasher {
           classpath,
           convertDateSqlToJoda(start),
           end.map(convertDateSqlToJoda),
-          err.map(new Throwable(_)))
+          err.map(getThrowable)
+        )
       }.headOption
 
+    }
+  }
+
+  /**
+    * @return specific Throwable instance based on the persisted error string
+    *         that contains the classname and message.
+    */
+  def getThrowable(err: String): Throwable = {
+    val splitPos = err.indexOf("::")
+    val className = err.substring(0, splitPos)
+    val message = err.substring(splitPos + 2)
+    className match {
+      // this first case is important so that the status will get set to KILLED instead of ERROR
+      case "spark.jobserver.JobManagerActor$JobKilledException" => JobKilledException(message)
+      case "java.util.NoSuchElementException" => new NoSuchElementException(message)
+      case "com.typesafe.config.ConfigException$Missing" => new Missing(message)
+      case "java.lang.IllegalArgumentException" => new IllegalArgumentException(message)
+      case _ => new Throwable(message)
     }
   }
 }

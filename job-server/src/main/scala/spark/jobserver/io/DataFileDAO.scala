@@ -117,9 +117,4 @@ class DataFileDAO(config: Config) {
   private def createFileName(aName: String, uploadTime: DateTime): String =
     aName + "-" + uploadTime.toString().replace(':', '_')
 
-  private def readError(in: DataInputStream) = {
-    val error = in.readUTF()
-    if (error == "") None else Some(new Throwable(error))
-  }
-
 }
