@@ -22,7 +22,7 @@ get_abs_script_path
 
 GC_OPTS="-XX:+UseConcMarkSweepGC
          -verbose:gc -XX:+PrintGCTimeStamps -Xloggc:$appdir/gc.out
-         -XX:MaxPermSize=512m
+         -XX:MetaspaceSize=512m
          -XX:+CMSClassUnloadingEnabled "
 
 # To truly enable JMX in AWS and other containerized environments, also need to set
