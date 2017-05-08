@@ -351,6 +351,5 @@ class JobSqlDAO(config: Config) extends JobDAO with FileCacher {
       Files.readAllBytes(Paths.get(jarFile.getAbsolutePath))
     }
   }
-}
 
 }

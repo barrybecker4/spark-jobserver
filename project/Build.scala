@@ -1,4 +1,5 @@
 import scalariform.formatter.preferences._
+import java.lang.Runtime
 
 import sbt._
 import Keys._
@@ -8,6 +9,7 @@ import com.typesafe.sbt.SbtScalariform
 import sbtassembly.AssemblyPlugin.autoImport._
 import scoverage.ScoverageKeys._
 import spray.revolver.RevolverPlugin.autoImport._
+import Versions.{java, _}
 
 // There are advantages to using real Scala build files with SBT:
 //  - Multi-JVM testing won't work without it, for now
@@ -139,7 +141,7 @@ object JobServerBuild extends Build {
       val artifact = (assemblyOutputPath in assembly in jobServerExtras).value
       val artifactTargetPath = s"/app/${artifact.name}"
 
-      val sparkBuild = s"spark-$sparkVersion"
+      val sparkBuild = s"spark-$spark"
       val sparkBuildCmd = scalaBinaryVersion.value match {
         case "2.11" =>
           """
@@ -149,11 +151,11 @@ object JobServerBuild extends Build {
       }
 
       new sbtdocker.mutable.Dockerfile {
-        from(s"java:$javaVersion")
+        from(s"java:$java")
         // Dockerfile best practices: https://docs.docker.com/articles/dockerfile_best-practices/
         expose(8090)
         expose(9999)    // for JMX
-        env("MESOS_VERSION", mesosVersion)
+        env("MESOS_VERSION", mesos)
         runRaw("""echo \
           "deb http://repos.mesosphere.io/ubuntu/ trusty main" > /etc/apt/sources.list.d/mesosphere.list && \
                   apt-key adv --keyserver keyserver.ubuntu.com --recv E56151BF && \
@@ -195,10 +197,10 @@ object JobServerBuild extends Build {
       sbtdocker.ImageName(namespace = Some("velvia"),
                           repository = "spark-jobserver",
                           tag = Some(s"${version.value}" +
-                            s".mesos-${mesosVersion.split('-')(0)}" +
-                            s".spark-$sparkVersion" +
+                            s".mesos-${mesos.split('-')(0)}" +
+                            s".spark-$spark" +
                             s".scala-${scalaBinaryVersion.value}" +
-                            s".jdk-$javaVersion"))
+                            s".jdk-$java"))
     )
   )
 
@@ -207,7 +209,7 @@ object JobServerBuild extends Build {
     parallelExecution in Test := false,
     publishArtifact := false,
     concurrentRestrictions := Seq(
-      Tags.limit(Tags.CPU, java.lang.Runtime.getRuntime.availableProcessors()),
+      Tags.limit(Tags.CPU, Runtime.getRuntime.availableProcessors()),
       // limit to 1 concurrent test task, even across sub-projects
       // Note: some components of tests seem to have the "Untagged" tag rather than "Test" tag.
       // So, we limit the sum of "Test", "Untagged" tags to 1 concurrent
@@ -217,7 +219,7 @@ object JobServerBuild extends Build {
   lazy val revolverSettings = Seq(
     javaOptions in reStart += jobServerLogging,
     // Give job server a bit more PermGen since it does classloading
-    javaOptions in reStart += "-XX:MaxPermSize=256m",
+    //javaOptions in reStart += "-XX:MaxPermSize=256m",
     javaOptions in reStart += "-Djava.security.krb5.realm= -Djava.security.krb5.kdc=",
     // This lets us add Spark back to the classpath without assembly barfing
     fullClasspath in reStart := (fullClasspath in Compile).value,

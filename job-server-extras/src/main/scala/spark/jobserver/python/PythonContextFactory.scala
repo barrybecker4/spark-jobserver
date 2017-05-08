@@ -10,6 +10,7 @@ import org.joda.time.DateTime
 import org.scalactic.{Bad, Good, Or}
 import org.slf4j.LoggerFactory
 import spark.jobserver._
+import org.apache.spark.api.java.JavaSparkContext
 import spark.jobserver.context.{JobLoadError, LoadingError, SparkContextFactory}
 import spark.jobserver.util.SparkJobUtils
 

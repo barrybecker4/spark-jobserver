@@ -19,7 +19,6 @@ LOGGING_OPTS="-Dlog4j.configuration=file:$appdir/log4j-server.properties
 
 GC_OPTS="-XX:+UseConcMarkSweepGC
          -verbose:gc -XX:+PrintGCTimeStamps -Xloggc:$appdir/gc.out
-         -XX:MaxPermSize=512m
          -XX:+CMSClassUnloadingEnabled "
 
 JAVA_OPTS="-XX:MaxDirectMemorySize=$MAX_DIRECT_MEMORY
