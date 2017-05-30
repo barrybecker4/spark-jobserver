@@ -83,6 +83,7 @@ object Dependencies {
   val repos = Seq(
     "Typesafe Repo" at "http://repo.typesafe.com/typesafe/releases/",
     "sonatype snapshots" at "https://oss.sonatype.org/content/repositories/snapshots/",
-    "spray repo" at "http://repo.spray.io"
+    "spray repo" at "http://repo.spray.io",
+    "mineset repository" at "http://hathor.esi-internal.esi-group.com/maven/"
   )
 }
