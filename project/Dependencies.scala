@@ -84,6 +84,6 @@ object Dependencies {
     "Typesafe Repo" at "http://repo.typesafe.com/typesafe/releases/",
     "sonatype snapshots" at "https://oss.sonatype.org/content/repositories/snapshots/",
     "spray repo" at "http://repo.spray.io",
-    "mineset repository" at "http://hathor.esi-internal.esi-group.com/maven/"
+    "ESI Artifactory" at "http://esi-components.esi-group.com/artifactory/release/"
   )
 }

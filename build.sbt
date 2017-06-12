@@ -232,6 +232,10 @@ lazy val commonSettings = Defaults.coreDefaultSettings ++ dirSettings ++ implici
     org.scalastyle.sbt.ScalastylePlugin.scalastyle.in(Compile).toTask("").value
   },
   (compile in Compile) <<= (compile in Compile) dependsOn runScalaStyle,
+  publishTo := Some("Artifactory Realm" at "http://esi-components.esi-group.com/artifactory/release"),
+  credentials += Credentials(Path.userHome / ".m2" / ".credentials"),
+  licenses += "Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0.html"),
+  publishMavenStyle := true,
 
   // In Scala 2.10, certain language features are disabled by default, such as implicit conversions.
   // Need to pass in language options or import scala.language.* to enable them.
@@ -248,6 +252,7 @@ lazy val commonSettings = Defaults.coreDefaultSettings ++ dirSettings ++ implici
   libraryDependencies ++= apiDeps,
   parallelExecution in Test := false,
   testOptions in Test += Tests.Argument(TestFrameworks.ScalaTest, "-oDF"),
+
   // We need to exclude jms/jmxtools/etc because it causes undecipherable SBT errors  :(
   ivyXML :=
     <dependencies>
@@ -263,7 +268,8 @@ lazy val scoverageSettings = {
 }
 
 lazy val publishSettings = Seq(
-  licenses += ("Apache-2.0", url("http://choosealicense.com/licenses/apache/")),
+  //licenses += ("Apache-2.0", url("http://choosealicense.com/licenses/apache/")),
+  licenses += "Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0.html"),
   bintrayOrganization := Some("spark-jobserver")
 )
 

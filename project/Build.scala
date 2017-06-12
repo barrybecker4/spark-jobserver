@@ -239,7 +239,11 @@ object JobServerBuild extends Build {
     organization := "spark.jobserver",
     crossPaths   := true,
     scalaVersion := sys.env.getOrElse("SCALA_VERSION", "2.11.8"),
-    publishTo    := Some(Resolver.file("Unused repo", file("target/unusedrepo"))),
+    publishTo := Some("Artifactory Realm" at "http://esi-components.esi-group.com/artifactory/release"),
+    credentials += Credentials(Path.userHome / ".m2" / ".credentials"),
+    licenses += "Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0.html"),
+    publishMavenStyle := true,
+
     // scalastyleFailOnError := true,
     runScalaStyle := {
       org.scalastyle.sbt.ScalastylePlugin.scalastyle.in(Compile).toTask("").value
@@ -274,7 +278,8 @@ object JobServerBuild extends Build {
   }
 
   lazy val publishSettings = Seq(
-    licenses += ("Apache-2.0", url("http://choosealicense.com/licenses/apache/")),
+    //licenses += ("Apache-2.0", url("http://choosealicense.com/licenses/apache/")),
+    licenses += "Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0.html"),
     bintrayOrganization := Some("spark-jobserver")
   )
 
