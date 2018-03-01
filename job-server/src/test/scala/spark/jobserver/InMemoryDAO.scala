@@ -1,21 +1,20 @@
 package spark.jobserver
 
-import com.typesafe.config.Config
 import java.io.{BufferedOutputStream, FileOutputStream}
 
+import com.typesafe.config.Config
 import org.joda.time.DateTime
+import spark.jobserver.io.{BinaryType, JobDAO, JobInfo, JobStatus}
 
 import scala.collection.mutable
-import spark.jobserver.io.{JobStatus, BinaryType, JobDAO, JobInfo}
-
+import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent._
 import scala.concurrent.duration._
-import scala.concurrent.ExecutionContext.Implicits.global
 /**
- * In-memory DAO for easy unit testing
- */
+  * In-memory DAO for easy unit testing
+  */
 class InMemoryDAO extends JobDAO {
-  val binaries = mutable.HashMap.empty[(String, BinaryType, DateTime), (Array[Byte])]
+  var binaries = mutable.HashMap.empty[(String, BinaryType, DateTime), (Array[Byte])]
 
   override def saveBinary(appName: String,
                           binaryType: BinaryType,
@@ -27,10 +26,10 @@ class InMemoryDAO extends JobDAO {
   override def getApps: Future[Map[String, (BinaryType, DateTime)]] = {
     Future {
       binaries.keys
-      .groupBy(_._1)
-      .map { case (appName, appUploadTimeTuples) =>
-        appName -> appUploadTimeTuples.map(t => (t._2, t._3)).toSeq.head
-      }
+        .groupBy(_._1)
+        .map { case (appName, appUploadTimeTuples) =>
+          appName -> appUploadTimeTuples.map(t => (t._2, t._3)).toSeq.head
+        }
     }
   }
 
@@ -55,15 +54,19 @@ class InMemoryDAO extends JobDAO {
     val allJobs = jobInfos.values.toSeq.sortBy(_.startTime.toString())
     val filterJobs = statusOpt match {
       case Some(JobStatus.Running) => {
-        allJobs.filter(jobInfo => !jobInfo.endTime.isDefined && !jobInfo.error.isDefined)
+        allJobs.filter(jobInfo => jobInfo.endTime.isEmpty && jobInfo.error.isEmpty)
       }
       case Some(JobStatus.Error) => allJobs.filter(_.error.isDefined)
       case Some(JobStatus.Finished) => {
-        allJobs.filter(jobInfo => jobInfo.endTime.isDefined && !jobInfo.error.isDefined)
+        allJobs.filter(jobInfo => jobInfo.endTime.isDefined && jobInfo.error.isEmpty)
       }
       case _ => allJobs
     }
     filterJobs.take(limit)
+  }
+
+  override def getRunningJobInfosForContextName(contextName: String): Future[Seq[JobInfo]] = Future {
+    jobInfos.values.toSeq.filter(j => j.endTime.isEmpty && j.error.isEmpty && j.contextName == contextName)
   }
 
   override def getJobInfo(jobId: String): Future[Option[JobInfo]] = Future {
@@ -74,7 +77,16 @@ class InMemoryDAO extends JobDAO {
 
   override def saveJobConfig(jobId: String, jobConfig: Config) { jobConfigs(jobId) = jobConfig }
 
-  override def getJobConfigs: Future[Map[String, Config]] = Future {
-    jobConfigs.toMap
+  override  def getJobConfig(jobId: String): Future[Option[Config]] = Future {
+    jobConfigs.get(jobId)
+  }
+
+  override def getLastUploadTimeAndType(appName: String): Option[(DateTime, BinaryType)] = {
+    // Copied from the base JobDAO, feel free to optimize this (having in mind this specific storage type)
+    Await.result(getApps, 60 seconds).get(appName).map(t => (t._2, t._1))
+  }
+
+override def deleteBinary(appName: String): Unit = {
+    binaries = binaries.filter { case ((name, _, _), _) => appName != name }
   }
 }

@@ -1,6 +1,5 @@
 resolvers += Classpaths.sbtPluginReleases
-addSbtPlugin("io.get-coursier" % "sbt-coursier" % "1.0.0-M14")
-addSbtPlugin("org.ensime" % "sbt-ensime" % "1.10.0")
+
 addSbtPlugin("com.timushev.sbt" % "sbt-updates" % "0.1.10")
 
 addSbtPlugin("io.spray" % "sbt-revolver" % "0.8.0")       // For quick restarts for web development
@@ -19,4 +18,4 @@ addSbtPlugin("me.lessis" % "ls-sbt" % "0.1.3")
 
 addSbtPlugin("com.github.gseitz" % "sbt-release" % "1.0.3")
 
-addSbtPlugin("se.marcuslonnberg" % "sbt-docker" % "1.4.0")
+addSbtPlugin("se.marcuslonnberg" % "sbt-docker" % "1.4.1")

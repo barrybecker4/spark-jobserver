@@ -10,7 +10,7 @@ import org.apache.spark.rdd.RDD
 import com.typesafe.config.Config
 import spark.jobserver.common.akka.AkkaTestUtils
 
-class JobWithNamedRddsSpec extends JobSpecBase(JobManagerSpec.getNewSystem) {
+class JobWithNamedRddsSpec extends JobSpecBase(JobManagerActorSpec.getNewSystem) {
 
   val sc = new SparkContext("local[4]", getClass.getSimpleName, new SparkConf)
 
@@ -25,6 +25,10 @@ class JobWithNamedRddsSpec extends JobSpecBase(JobManagerSpec.getNewSystem) {
   val job = new TestJob1
   job.namedObjects = new JobServerNamedObjects(system)
   val namedTestRdds = job.namedRdds
+
+  before {
+    namedTestRdds.getNames().foreach { namedTestRdds.destroy }
+  }
 
   override def afterAll() {
     sc.stop()

@@ -1,21 +1,27 @@
 package spark.jobserver
 
-import java.io.IOException
 import java.nio.file.{Files, Paths}
 import java.nio.charset.Charset
 import java.util.concurrent.TimeUnit
 
 import akka.actor._
+import akka.pattern.ask
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent, MemberUp}
 import akka.util.Timeout
 import com.typesafe.config.{Config, ConfigFactory, ConfigRenderOptions}
-import spark.jobserver.util.SparkJobUtils
+import spark.jobserver.util.{SparkJobUtils, ManagerLauncher}
+
 import scala.collection.mutable
 import scala.util.{Failure, Success, Try}
-import scala.sys.process._
-
 import spark.jobserver.common.akka.InstrumentedActor
+
+import scala.concurrent.Await
+import akka.pattern.gracefulStop
+import org.joda.time.DateTime
+import org.slf4j.LoggerFactory
+import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
+import spark.jobserver.JobManagerActor.{GetContexData, ContexData, SparkContextDead}
 
 /**
  * The AkkaClusterSupervisorActor launches Spark Contexts as external processes
@@ -25,17 +31,11 @@ import spark.jobserver.common.akka.InstrumentedActor
  * it is assumed to be one starting up, and it will be asked to identify itself,
  * and then the Supervisor will try to initialize it.
  *
- * See the [[LocalContextSupervisorActor]] for normal config options.  Here are ones
- * specific to this class.
- *
- * ==Configuration==
- * {{{
- *   deploy {
- *     manager-start-cmd = "./manager_start.sh"
- *   }
- * }}}
+ * See the [[LocalContextSupervisorActor]] for normal config options.
  */
-class AkkaClusterSupervisorActor(daoActor: ActorRef) extends InstrumentedActor {
+class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
+    extends InstrumentedActor {
+
   import ContextSupervisor._
   import scala.collection.JavaConverters._
   import scala.concurrent.duration._
@@ -44,20 +44,21 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef) extends InstrumentedActor {
   val defaultContextConfig = config.getConfig("spark.context-settings")
   val contextInitTimeout = config.getDuration("spark.context-settings.context-init-timeout",
                                                 TimeUnit.SECONDS)
-  val managerStartCommand = config.getString("deploy.manager-start-cmd")
+  val contextDeletionTimeout = SparkJobUtils.getContextDeletionTimeout(config)
   import context.dispatcher
 
   //actor name -> (context isadhoc, success callback, failure callback)
   //TODO: try to pass this state to the jobManager at start instead of having to track
   //extra state.  What happens if the WebApi process dies before the forked process
   //starts up?  Then it never gets initialized, and this state disappears.
-  private val contextInitInfos = mutable.HashMap.empty[String, (Boolean, ActorRef => Unit, Throwable => Unit)]
+  private val contextInitInfos = mutable.HashMap.empty[String,
+                                                      (Config, Boolean, ActorRef => Unit, Throwable => Unit)]
 
   // actor name -> (JobManagerActor ref, ResultActor ref)
   private val contexts = mutable.HashMap.empty[String, (ActorRef, ActorRef)]
 
   private val cluster = Cluster(context.system)
-  private val selfAddress = cluster.selfAddress
+  protected val selfAddress = cluster.selfAddress
 
   // This is for capturing results for ad-hoc jobs. Otherwise when ad-hoc job dies, resultActor also dies,
   // and there is no way to retrieve results.
@@ -87,9 +88,10 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef) extends InstrumentedActor {
         val actorName = actorRef.path.name
         if (actorName.startsWith("jobManager")) {
           logger.info("Received identify response, attempting to initialize context at {}", memberActors)
-          (for { (isAdHoc, successFunc, failureFunc) <- contextInitInfos.remove(actorName) }
+          (for { (contextConfig, isAdHoc, successFunc, failureFunc) <- contextInitInfos.remove(actorName) }
            yield {
-             initContext(actorName, actorRef, contextInitTimeout)(isAdHoc, successFunc, failureFunc)
+             initContext(contextConfig, actorName,
+                         actorRef, contextInitTimeout)(isAdHoc, successFunc, failureFunc)
            }).getOrElse({
             logger.warn("No initialization or callback found for jobManager actor {}", actorRef.path)
             actorRef ! PoisonPill
@@ -103,6 +105,22 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef) extends InstrumentedActor {
 
     case ListContexts =>
       sender ! contexts.keys.toSeq
+
+    case GetSparkContexData(name) =>
+      contexts.get(name) match {
+        case Some((actor, _)) =>
+          val future = (actor ? GetContexData)(30.seconds)
+          val originator = sender
+          future.collect {
+            case ContexData(appId, Some(webUi)) =>
+              originator ! SparkContexData(name, appId, Some(webUi))
+            case ContexData(appId, None) => originator ! SparkContexData(name, appId, None)
+            case SparkContextDead =>
+              logger.info("SparkContext {} is dead", name)
+              originator ! NoSuchContext
+          }
+        case _ => sender ! NoSuchContext
+      }
 
     case AddContext(name, contextConfig) =>
       val originator = sender()
@@ -121,12 +139,13 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef) extends InstrumentedActor {
       }
 
     case StartAdHocContext(classPath, contextConfig) =>
-      val originator = sender()
+      val originator = sender
       val mergedConfig = contextConfig.withFallback(defaultContextConfig)
-
+      val userNamePrefix = Try(mergedConfig.getString(SparkJobUtils.SPARK_PROXY_USER_PARAM))
+        .map(SparkJobUtils.userNamePrefix(_)).getOrElse("")
       var contextName = ""
       do {
-        contextName = java.util.UUID.randomUUID().toString().take(8) + "-" + classPath
+        contextName = userNamePrefix + java.util.UUID.randomUUID().toString().take(8) + "-" + classPath
       } while (contexts contains contextName)
       // TODO(velvia): Make the check above atomic.  See
       // https://github.com/spark-jobserver/spark-jobserver/issues/349
@@ -152,8 +171,14 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef) extends InstrumentedActor {
         logger.info("Shutting down context {}", name)
         val contextActorRef = contexts(name)._1
         cluster.down(contextActorRef.path.address)
-        contextActorRef ! PoisonPill
-        sender ! ContextStopped
+        try {
+          val stoppedCtx = gracefulStop(contexts(name)._1, contextDeletionTimeout seconds)
+          Await.result(stoppedCtx, contextDeletionTimeout + 1 seconds)
+          sender ! ContextStopped
+        }
+        catch {
+          case err: Exception => sender ! ContextStopError(err)
+        }
       } else {
         sender ! NoSuchContext
       }
@@ -161,24 +186,32 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef) extends InstrumentedActor {
     case Terminated(actorRef) =>
       val name: String = actorRef.path.name
       logger.info("Actor terminated: {}", name)
-      contexts.retain { case (name, (jobMgr, resActor)) => jobMgr != actorRef }
+      for ((name, _) <- contexts.find(_._2._1 == actorRef)) {
+        contexts.remove(name)
+        daoActor ! CleanContextJobInfos(name, DateTime.now())
+      }
+      cluster.down(actorRef.path.address)
   }
 
-  private def initContext(actorName: String, ref: ActorRef, timeoutSecs: Long = 1)
+  private def initContext(contextConfig: Config,
+                          actorName: String,
+                          ref: ActorRef,
+                          timeoutSecs: Long = 1)
                          (isAdHoc: Boolean,
                           successFunc: ActorRef => Unit,
                           failureFunc: Throwable => Unit): Unit = {
     import akka.pattern.ask
-
     val resultActor = if (isAdHoc) globalResultActor else context.actorOf(Props(classOf[JobResultActor]))
     (ref ? JobManagerActor.Initialize(
-      Some(resultActor)))(Timeout(timeoutSecs.second)).onComplete {
-      case Failure(e:Exception) =>
+      contextConfig, Some(resultActor), dataManagerActor))(Timeout(timeoutSecs.second)).onComplete {
+      case Failure(e: Exception) =>
         logger.info("Failed to send initialize message to context " + ref, e)
+        cluster.down(ref.path.address)
         ref ! PoisonPill
         failureFunc(e)
       case Success(JobManagerActor.InitError(t)) =>
         logger.info("Failed to initialize context " + ref, t)
+        cluster.down(ref.path.address)
         ref ! PoisonPill
         failureFunc(t)
       case Success(JobManagerActor.Initialized(ctxName, resActor)) =>
@@ -187,6 +220,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef) extends InstrumentedActor {
         context.watch(ref)
         successFunc(ref)
       case _ => logger.info("Failed for unknown reason.")
+        cluster.down(ref.path.address)
         ref ! PoisonPill
         failureFunc(new RuntimeException("Failed for unknown reason."))
     }
@@ -199,67 +233,28 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef) extends InstrumentedActor {
 
     logger.info("Starting context with actor name {}", contextActorName)
 
-    val contextDir: java.io.File = try {
-        createContextDir(name, contextConfig, isAdHoc, contextActorName)
-      } catch {
-        case e: Exception =>
-          failureFunc(e)
-          return
-      }
-
-    //extract spark.proxy.user from contextConfig, if available and pass it to $managerStartCommand
-    var cmdString = s"$managerStartCommand $contextDir ${selfAddress.toString}"
-
-    if (contextConfig.hasPath(SparkJobUtils.SPARK_PROXY_USER_PARAM)) {
-      cmdString = cmdString + s" ${contextConfig.getString(SparkJobUtils.SPARK_PROXY_USER_PARAM)}"
+    // Now create the contextConfig merged with the values we need
+    val mergedContextConfig = ConfigFactory.parseMap(
+      Map("is-adhoc" -> isAdHoc.toString, "context.name" -> name).asJava
+    ).withFallback(contextConfig)
+    launchDriver(name, contextConfig, contextActorName) match {
+      case true =>
+        contextInitInfos(contextActorName) = (mergedContextConfig, isAdHoc, successFunc, failureFunc)
+      case false => failureFunc(new Exception("Failed to launch context JVM"))
     }
-
-    val pb = Process(cmdString)
-    val pio = new ProcessIO(_ => (),
-                        stdout => scala.io.Source.fromInputStream(stdout)
-                          .getLines.foreach(println),
-                        stderr => scala.io.Source.fromInputStream(stderr).getLines().foreach(println))
-    logger.info("Starting to execute sub process {}", pb)
-    val processStart = Try {
-      val process = pb.run(pio)
-      val exitVal = process.exitValue()
-      if (exitVal != 0) {
-        throw new IOException("Failed to launch context process, got exit code " + exitVal)
-      }
-    }
-
-    if (processStart.isSuccess) {
-      contextInitInfos(contextActorName) = (isAdHoc, successFunc, failureFunc)
-    } else {
-      failureFunc(processStart.failed.get)
-    }
-
   }
 
-  private def createContextDir(name: String,
-                               contextConfig: Config,
-                               isAdHoc: Boolean,
-                               actorName: String): java.io.File = {
+  protected def launchDriver(name: String, contextConfig: Config, contextActorName: String): Boolean = {
     // Create a temporary dir, preferably in the LOG_DIR
     val encodedContextName = java.net.URLEncoder.encode(name, "UTF-8")
-    val tmpDir = Option(System.getProperty("LOG_DIR")).map { logDir =>
+    val contextDir = Option(System.getProperty("LOG_DIR")).map { logDir =>
       Files.createTempDirectory(Paths.get(logDir), s"jobserver-$encodedContextName")
     }.getOrElse(Files.createTempDirectory("jobserver"))
-    logger.info("Created working directory {} for context {}", tmpDir: Any, name)
+    logger.info("Created working directory {} for context {}", contextDir: Any, name)
 
-    // Now create the contextConfig merged with the values we need
-    val mergedConfig = ConfigFactory.parseMap(
-                         Map("is-adhoc" -> isAdHoc.toString,
-                             "context.name" -> name,
-                             "context.actorname" -> actorName).asJava
-                       ).withFallback(contextConfig)
-
-    // Write out the config to the temp dir
-    Files.write(tmpDir.resolve("context.conf"),
-                Seq(mergedConfig.root.render(ConfigRenderOptions.concise)).asJava,
-                Charset.forName("UTF-8"))
-
-    tmpDir.toFile
+    val launcher = new ManagerLauncher(config, contextConfig,
+        selfAddress.toString, contextActorName, contextDir.toString)
+    launcher.start()
   }
 
   private def addContextsFromConfig(config: Config) {

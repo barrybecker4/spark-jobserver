@@ -1,14 +1,15 @@
 package spark.jobserver
 
 import akka.actor._
-import akka.testkit.{ImplicitSender, TestKit}
-import com.typesafe.config.ConfigFactory
-import spark.jobserver.io.{JobDAO, JobDAOActor}
+import akka.testkit.{ImplicitSender, TestKit, TestProbe}
+import com.typesafe.config.{ConfigFactory, ConfigValueFactory}
 import org.scalatest.{BeforeAndAfter, BeforeAndAfterAll, FunSpecLike, Matchers}
-import scala.concurrent.duration._
-
 import spark.jobserver.common.akka
 import spark.jobserver.common.akka.AkkaTestUtils
+import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
+import spark.jobserver.util.SparkJobUtils
+
+import scala.concurrent.duration._
 
 
 object LocalContextSupervisorSpec {
@@ -21,6 +22,7 @@ object LocalContextSupervisorSpec {
       }
       jobserver.job-result-cache-size = 100
       jobserver.context-creation-timeout = 5 s
+|     jobserver.context-deletion-timeout = 2 s
       jobserver.yarn-context-creation-timeout = 40 s
       jobserver.named-object-creation-timeout = 60 s
       contexts {
@@ -57,8 +59,8 @@ class LocalContextSupervisorSpec extends TestKit(LocalContextSupervisorSpec.syst
   }
 
   var supervisor: ActorRef = _
-  var dao: JobDAO = _
-  var daoActor: ActorRef = _
+  var daoProbe: TestProbe = _
+  var dataManager: ActorRef = _
 
   val contextConfig = LocalContextSupervisorSpec.config.getConfig("spark.context-settings")
 
@@ -66,9 +68,9 @@ class LocalContextSupervisorSpec extends TestKit(LocalContextSupervisorSpec.syst
   System.setProperty("spark.driver.host", "localhost")
 
   before {
-    dao = new InMemoryDAO
-    daoActor = system.actorOf(JobDAOActor.props(dao))
-    supervisor = system.actorOf(Props(classOf[LocalContextSupervisorActor], daoActor))
+    daoProbe = TestProbe()
+    dataManager = system.actorOf(Props.empty)
+    supervisor = system.actorOf(Props(classOf[LocalContextSupervisorActor], daoProbe.ref, dataManager))
   }
 
   after {
@@ -86,9 +88,29 @@ class LocalContextSupervisorSpec extends TestKit(LocalContextSupervisorSpec.syst
 
     it("can add contexts from jobConfig") {
       supervisor ! AddContextsFromConfig
-      Thread sleep 4000
+      Thread sleep 10000
       supervisor ! ListContexts
       expectMsg(40 seconds, Seq("olap-demo"))
+    }
+
+    it("should create adhoc context") {
+      supervisor ! StartAdHocContext("spark.jobserver.SleepJob", contextConfig)
+      expectMsgPF(10 seconds, "manager and result actors") {
+        case (manager: ActorRef, resultActor: ActorRef) =>
+          assert(manager.path.name.endsWith("spark.jobserver.SleepJob"))
+      }
+    }
+
+    it("should create adhoc context for proxy-user") {
+      supervisor ! StartAdHocContext("spark.jobserver.SleepJob",
+        contextConfig.withValue(
+          SparkJobUtils.SPARK_PROXY_USER_PARAM,
+          ConfigValueFactory.fromAnyRef("userName")))
+      expectMsgPF(10 seconds, "manager and result actors") {
+        case (manager: ActorRef, resultActor: ActorRef) =>
+          assert(manager.path.name.startsWith("userName" + SparkJobUtils.NameContextDelimiter))
+          assert(manager.path.name.endsWith("spark.jobserver.SleepJob"))
+      }
     }
 
     it("should be able to add multiple new contexts") {
@@ -128,7 +150,6 @@ class LocalContextSupervisorSpec extends TestKit(LocalContextSupervisorSpec.syst
       supervisor ! StopContext("c1")
       expectMsg(ContextStopped)
 
-      Thread.sleep(2000) // wait for a while since deleting context is an asyc call
       supervisor ! ListContexts
       expectMsg(Seq.empty[String])
     }
@@ -144,6 +165,17 @@ class LocalContextSupervisorSpec extends TestKit(LocalContextSupervisorSpec.syst
 
       supervisor ! AddContext("c1", contextConfig)
       expectMsg(ContextAlreadyExists)
+    }
+
+    it("should clean up context running jobs on context termination") {
+      supervisor ! AddContext("c1", contextConfig)
+      expectMsg(ContextInitialized)
+      supervisor ! GetContext("c1")
+      val (jobManager: ActorRef, _) = expectMsgType[(_, _)]
+
+      jobManager ! PoisonPill
+      val msg = daoProbe.expectMsgType[CleanContextJobInfos]
+      msg.contextName shouldBe "c1"
     }
   }
 }

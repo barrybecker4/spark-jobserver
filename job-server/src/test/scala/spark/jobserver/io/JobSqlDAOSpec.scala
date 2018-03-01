@@ -18,7 +18,7 @@ abstract class JobSqlDAOSpecBase {
 class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLike with Matchers
   with BeforeAndAfter {
   override def config: Config = ConfigFactory.load("local.test.jobsqldao.conf")
-
+  val timeout = 60 seconds
   var dao: JobSqlDAO = _
 
   // *** TEST DATA ***
@@ -83,11 +83,10 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
 
       val noEndTime: Option[DateTime] = None
       val someEndTime: Option[DateTime] = Some(time) // Any DateTime Option is fine
-      val noError: Option[Throwable] = None
-      val someError: Option[Throwable] = Some(throwable)
+      val someError = Some(ErrorData(throwable))
 
       val endTime: Option[DateTime] = if (hasEndTime) someEndTime else noEndTime
-      val error: Option[Throwable] = if (hasError) someError else noError
+      val error = if (hasError) someError else None
 
       JobInfo(id, contextName, jarInfo, classPath, startTime, endTime, error)
     }
@@ -115,10 +114,29 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
 
       // read it back
       val apps: Map[String, (BinaryType, DateTime)] =
-        Await.result(dao.getApps, 60 seconds).filter(_._2._1 == BinaryType.Jar)
+        Await.result(dao.getApps, timeout).filter(_._2._1 == BinaryType.Jar)
 
       // test
       jarFile.exists() should equal (true)
+      apps.keySet should equal (Set(jarInfo.appName))
+      apps(jarInfo.appName) should equal ((BinaryType.Jar, jarInfo.uploadTime))
+    }
+
+    it("should be able to save one jar and get it back without creating a cache") {
+      val configNoCache = config.withValue("spark.jobserver.cache-on-upload", ConfigValueFactory.fromAnyRef(false))
+      val daoNoCache = new JobSqlDAO(configNoCache)
+      // check the pre-condition
+      jarFile.exists() should equal (false)
+
+      // save
+      daoNoCache.saveBinary(jarInfo.appName, BinaryType.Jar, jarInfo.uploadTime, jarBytes)
+
+      // read it back
+      val apps: Map[String, (BinaryType, DateTime)] =
+        Await.result(daoNoCache.getApps, timeout).filter(_._2._1 == BinaryType.Jar)
+
+      // test
+      jarFile.exists() should equal (false)
       apps.keySet should equal (Set(jarInfo.appName))
       apps(jarInfo.appName) should equal ((BinaryType.Jar, jarInfo.uploadTime))
     }
@@ -147,7 +165,7 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
 
       // read it back
       val apps: Map[String, (BinaryType, DateTime)] =
-        Await.result(dao.getApps, 60 seconds).filter(_._2._1 == BinaryType.Egg)
+        Await.result(dao.getApps, timeout).filter(_._2._1 == BinaryType.Egg)
 
       // test
       eggFile.exists() should equal (true)
@@ -167,9 +185,10 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
     }
   }
 
-  describe("saveJobConfig() and getJobConfigs() tests") {
-    it("should provide an empty map on getJobConfigs() for an empty CONFIGS table") {
-      Map.empty[String, Config] should equal (Await.result(dao.getJobConfigs, 60 seconds))
+  describe("saveJobConfig() tests") {
+    it("should provide None on getJobConfig(jobId) where there is no config for a given jobId") {
+      val config = Await.result(dao.getJobConfig("44c32fe1-38a4-11e1-a06a-485d60c81a3e"), timeout)
+      config shouldBe None
     }
 
     it("should save and get the same config") {
@@ -177,22 +196,19 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       dao.saveJobConfig(jobId, jobConfig)
 
       // get all configs
-      val configs = Await.result(dao.getJobConfigs, 60 seconds)
+      val config = Await.result(dao.getJobConfig(jobId), timeout).get
 
       // test
-      configs.keySet should equal (Set(jobId))
-      configs(jobId) should equal (expectedConfig)
+      config should equal (expectedConfig)
     }
 
     it("should be able to get previously saved config") {
       // config saved in prior test
 
-      // get job configs
-      val configs = Await.result(dao.getJobConfigs, 60 seconds)
+      val config = Await.result(dao.getJobConfig(jobId), timeout).get
 
       // test
-      configs.keySet should equal (Set(jobId))
-      configs(jobId) should equal (expectedConfig)
+      config should equal (expectedConfig)
     }
 
     it("Save a new config, bring down DB, bring up DB, should get configs from DB") {
@@ -209,17 +225,18 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       dao = new JobSqlDAO(config)
 
       // Get all configs
-      val configs = Await.result(dao.getJobConfigs, 60 seconds)
+      val jobIdConfig = Await.result(dao.getJobConfig(jobId), timeout).get
+      val jobId2Config = Await.result(dao.getJobConfig(jobId2), timeout).get
 
       // test
-      configs.keySet should equal (Set(jobId, jobId2))
-      configs.values.toSeq should equal (Seq(expectedConfig, expectedConfig2))
+      jobIdConfig should equal (expectedConfig)
+      jobId2Config should equal (expectedConfig2)
     }
   }
 
   describe("Basic saveJobInfo() and getJobInfos() tests") {
     it("should provide an empty Seq on getJobInfos() for an empty JOBS table") {
-      Seq.empty[JobInfo] should equal (Await.result(dao.getJobInfos(1), 60 seconds))
+      Seq.empty[JobInfo] should equal (Await.result(dao.getJobInfos(1), timeout))
     }
 
     it("should save a new JobInfo and get the same JobInfo") {
@@ -227,7 +244,7 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       dao.saveJobInfo(jobInfoNoEndNoErr)
 
       // get some JobInfos
-      val jobs: Seq[JobInfo] = Await.result(dao.getJobInfos(10), 60 seconds)
+      val jobs: Seq[JobInfo] = Await.result(dao.getJobInfos(10), timeout)
 
       jobs.head.jobId should equal (jobId)
       jobs.head should equal (expectedJobInfo)
@@ -237,7 +254,7 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       // jobInfo saved in prior test
 
       // get jobInfos
-      val jobInfo = Await.result(dao.getJobInfo(jobId), 60 seconds).get
+      val jobInfo = Await.result(dao.getJobInfo(jobId), timeout).get
 
       // test
       jobInfo should equal (expectedJobInfo)
@@ -257,7 +274,7 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       dao = new JobSqlDAO(config)
 
       // Get jobInfos
-      val jobs = Await.result(dao.getJobInfos(2), 60 seconds)
+      val jobs = Await.result(dao.getJobInfos(2), timeout)
       val jobIds = jobs map { _.jobId }
 
       // test
@@ -275,7 +292,7 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       info.uploadTime should equal (jarInfo.uploadTime)
 
       // Get all jobInfos
-      val jobs: Seq[JobInfo] = Await.result(dao.getJobInfos(2), 60 seconds)
+      val jobs: Seq[JobInfo] = Await.result(dao.getJobInfos(2), timeout)
 
       // First Test
       jobs.size should equal (2)
@@ -285,16 +302,17 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       // Cannot compare JobInfos directly if error is a Some(Throwable) because
       // Throwable uses referential equality
       dao.saveJobInfo(jobInfoNoEndSomeErr)
-      val jobs2 = Await.result(dao.getJobInfos(2), 60 seconds)
+      val jobs2 = Await.result(dao.getJobInfos(2), timeout)
       jobs2.size should equal (2)
       jobs2.last.endTime should equal (None)
-      jobs2.last.error.isDefined should equal (true)
-      intercept[Throwable] { jobs2.last.error.map(throw _) }
-      jobs2.last.error.get.getMessage should equal (throwable.getMessage)
+      jobs2.last.error shouldBe defined
+      jobs2.last.error.get.message should equal (throwable.getMessage)
+      jobs2.last.error.get.errorClass should equal (throwable.getClass.getName)
+      jobs2.last.error.get.stackTrace should not be empty
 
       // Third Test
       dao.saveJobInfo(jobInfoSomeEndNoErr)
-      val jobs3 = Await.result(dao.getJobInfos(2), 60 seconds)
+      val jobs3 = Await.result(dao.getJobInfos(2), timeout)
       jobs3.size should equal (2)
       jobs3.last.error.isDefined should equal (false)
       jobs3.last should equal (expectedSomeEndNoErr)
@@ -303,27 +321,30 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       // Cannot compare JobInfos directly if error is a Some(Throwable) because
       // Throwable uses referential equality
       dao.saveJobInfo(jobInfoSomeEndSomeErr)
-      val jobs4 = Await.result(dao.getJobInfos(2), 60 seconds)
+      val jobs4 = Await.result(dao.getJobInfos(2), timeout)
       jobs4.size should equal (2)
       jobs4.last.endTime should equal (expectedSomeEndSomeErr.endTime)
-      jobs4.last.error.isDefined should equal (true)
-      intercept[Throwable] { jobs4.last.error.map(throw _) }
-      jobs4.last.error.get.getMessage should equal (throwable.getMessage)
+      jobs4.last.error shouldBe defined
+      jobs4.last.error.get.message should equal (throwable.getMessage)
+      jobs4.last.error.get.errorClass should equal (throwable.getClass.getName)
+      jobs4.last.error.get.stackTrace should not be empty
     }
     it("retrieve by status equals running should be no end and no error") {
       //save some job insure exist one running job
       val dt1 = DateTime.now()
       val dt2 = Some(DateTime.now())
-      val someError = Some(new Throwable("test-error"))
+      val someError = Some(ErrorData("test-error", "", ""))
       val finishedJob: JobInfo = JobInfo("test-finished", "test", jarInfo, "test-class", dt1, dt2, None)
       val errorJob: JobInfo = JobInfo("test-error", "test", jarInfo, "test-class", dt1, dt2, someError)
       val runningJob: JobInfo = JobInfo("test-running", "test", jarInfo, "test-class", dt1, None, None)
+      val runningJobWithContext: JobInfo = JobInfo("test-running-with-context", "context", jarInfo, "test-class", dt1, None, None)
       dao.saveJobInfo(finishedJob)
       dao.saveJobInfo(runningJob)
+      dao.saveJobInfo(runningJobWithContext)
       dao.saveJobInfo(errorJob)
 
       //retrieve by status equals RUNNING
-      val retrieved = Await.result(dao.getJobInfos(1, Some(JobStatus.Running)), 60 seconds).head
+      val retrieved = Await.result(dao.getJobInfos(1, Some(JobStatus.Running)), timeout).head
 
       //test
       retrieved.endTime.isDefined should equal (false)
@@ -332,7 +353,7 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
     it("retrieve by status equals finished should be some end and no error") {
 
       //retrieve by status equals FINISHED
-      val retrieved = Await.result(dao.getJobInfos(1, Some(JobStatus.Finished)), 60 seconds).head
+      val retrieved = Await.result(dao.getJobInfos(1, Some(JobStatus.Finished)), timeout).head
 
       //test
       retrieved.endTime.isDefined should equal (true)
@@ -341,12 +362,40 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
 
     it("retrieve by status equals error should be some error") {
       //retrieve by status equals ERROR
-      val retrieved = Await.result(dao.getJobInfos(1, Some(JobStatus.Error)), 60 seconds).head
+      val retrieved = Await.result(dao.getJobInfos(1, Some(JobStatus.Error)), timeout).head
 
       //test
       retrieved.error.isDefined should equal (true)
     }
+
+    it("retrieve running jobs by cluster name") {
+      val retrieved = Await.result(dao.getRunningJobInfosForContextName("context"), timeout)
+
+      //test
+      retrieved.size shouldBe 1
+      retrieved.head.contextName shouldBe "context"
+    }
+
+    it("clean running jobs for context") {
+      Await.ready(dao.cleanRunningJobInfosForContext("context", DateTime.now()), timeout)
+
+      val jobInfo = Await.result(dao.getJobInfo("test-running-with-context"), timeout).get
+      jobInfo.endTime shouldBe defined
+      jobInfo.error shouldBe defined
+    }
   }
+
+  describe("delete binaries") {
+    it("should be able to delete jar file") {
+      val existing = Await.result(dao.getApps, timeout)
+      existing.keys should contain (jarInfo.appName)
+      dao.deleteBinary(jarInfo.appName)
+
+      val apps = Await.result(dao.getApps, timeout)
+      apps.keys should not contain (jarInfo.appName)
+    }
+  }
+
 }
 
 class JobSqlDAODBCPSpec extends JobSqlDAOSpec {
