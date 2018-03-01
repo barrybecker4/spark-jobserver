@@ -434,7 +434,7 @@ class JobManagerActor(daoActor: ActorRef, supervisorActorAddress: String,
   protected def wrapInRuntimeException(t: Throwable): RuntimeException = {
     val cause : Throwable = getRootCause(t)
     val e : RuntimeException = new RuntimeException("%s: %s"
-      .format(cause.getClass.getName ,cause.getMessage))
+      .format(cause.getClass.getName, cause.getMessage))
     e.setStackTrace(cause.getStackTrace)
      e
   }
