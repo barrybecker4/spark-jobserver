@@ -66,20 +66,24 @@ object AkkaClusterSupervisorActorSpec {
   val system = ActorSystem(ACTOR_SYSTEM_NAME, config)
 }
 
-class StubbedAkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef, managerProbe: TestProbe)
+class StubbedAkkaClusterSupervisorActor(daoActor: ActorRef,
+                                        dataManagerActor: ActorRef, managerProbe: TestProbe)
         extends AkkaClusterSupervisorActor(daoActor, dataManagerActor) {
 
   def createSlaveClusterWithJobManager(contextName: String, contextConfig: Config): (Cluster, ActorRef) = {
-    val managerConfig = ConfigFactory.parseString("akka.cluster.roles=[manager],akka.remote.netty.tcp.port=0").withFallback(config)
+    val managerConfig = ConfigFactory.parseString("akka.cluster.roles=[manager],akka.remote.netty.tcp.port=0")
+      .withFallback(config)
     val managerSystem = ActorSystem(AkkaClusterSupervisorActorSpec.ACTOR_SYSTEM_NAME, managerConfig)
 
-    val stubbedJobManagerRef = managerSystem.actorOf(Props(classOf[StubbedJobManagerActor], contextConfig), contextName)
+    val stubbedJobManagerRef =
+      managerSystem.actorOf(Props(classOf[StubbedJobManagerActor], contextConfig), contextName)
     val cluster = Cluster(managerSystem)
     managerProbe.watch(stubbedJobManagerRef)
     (cluster, stubbedJobManagerRef)
   }
 
-    override protected def launchDriver(name: String, contextConfig: Config, contextActorName: String): Boolean = {
+    override protected def launchDriver(name: String, contextConfig: Config,
+                                        contextActorName: String): Boolean = {
       // Create probe and cluster and join back the master
       Try(contextConfig.getBoolean("driver.fail")).getOrElse(false) match {
         case true => false
@@ -92,8 +96,8 @@ class StubbedAkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: Ac
   }
 
 class StubbedJobManagerActor(contextConfig: Config) extends Actor {
-  def receive = {
-    case JobManagerActor.Initialize(contextConfig,_,_) =>
+  def receive: Unit = {
+    case JobManagerActor.Initialize(contextConfig, _, _) =>
       val resultActor = context.system.actorOf(Props(classOf[JobResultActor]))
       sender() ! JobManagerActor.Initialized(contextConfig.getString("context.name"), resultActor)
     case JobManagerActor.GetContexData =>
@@ -107,7 +111,8 @@ class StubbedJobManagerActor(contextConfig: Config) extends Actor {
   }
 }
 
-class AkkaClusterSupervisorActorSpec extends TestKit(AkkaClusterSupervisorActorSpec.system) with ImplicitSender
+class AkkaClusterSupervisorActorSpec
+  extends TestKit(AkkaClusterSupervisorActorSpec.system) with ImplicitSender
       with FunSpecLike with Matchers with BeforeAndAfter with BeforeAndAfterAll {
 
   val contextInitTimeout = 10.seconds.dilated
@@ -124,10 +129,12 @@ class AkkaClusterSupervisorActorSpec extends TestKit(AkkaClusterSupervisorActorS
   override def beforeAll() {
     dao = new InMemoryDAO
     daoActor = system.actorOf(JobDAOActor.props(dao))
-    supervisor = system.actorOf(Props(classOf[StubbedAkkaClusterSupervisorActor], daoActor, TestProbe().ref, managerProbe), "supervisor")
+    supervisor = system.actorOf(
+      Props(classOf[StubbedAkkaClusterSupervisorActor], daoActor, TestProbe().ref, managerProbe),
+      "supervisor")
   }
 
-  override def afterAll() = {
+  override def afterAll(): Unit = {
      AkkaTestUtils.shutdownAndWait(AkkaClusterSupervisorActorSpec.system)
   }
 
@@ -231,7 +238,10 @@ class AkkaClusterSupervisorActorSpec extends TestKit(AkkaClusterSupervisorActorS
       expectMsg(contextInitTimeout, ContextInitialized)
 
       supervisor ! ListContexts
-      expectMsgAnyOf(ArrayBuffer("test-context6", "test-context7"), ArrayBuffer("test-context7", "test-context6"))
+      expectMsgAnyOf(
+        ArrayBuffer("test-context6", "test-context7"),
+        ArrayBuffer("test-context7", "test-context6")
+      )
     }
   }
 

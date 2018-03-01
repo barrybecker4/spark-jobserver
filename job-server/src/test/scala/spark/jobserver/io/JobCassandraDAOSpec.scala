@@ -67,7 +67,8 @@ class JobCassandraDAOSpec extends TestJarFinder with FunSpecLike with Matchers w
   case class GenJobInfoClosure() {
     var count: Int = 0
 
-    def apply(jarInfo: BinaryInfo, hasEndTime: Boolean, hasError: Boolean, isNew:Boolean, contextName: String = "test-context"):JobInfo ={
+    def apply(jarInfo: BinaryInfo, hasEndTime: Boolean,
+              hasError: Boolean, isNew: Boolean, contextName: String = "test-context"):JobInfo = {
       count = count + (if (isNew) 1 else 0)
 
       val id: String = UUIDs.random().toString

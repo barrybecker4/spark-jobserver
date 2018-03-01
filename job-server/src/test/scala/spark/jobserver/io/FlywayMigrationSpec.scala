@@ -10,7 +10,7 @@ class ResultSetIterator[T](resultSet: ResultSet, rowHandler: ResultSet => T) ext
   var checkNext: Option[Boolean] = Some(resultSet.first())
 
   override def hasNext: Boolean =
-    if(checkNext.isEmpty) {
+    if (checkNext.isEmpty) {
       val hn = resultSet.next()
       checkNext = Some(hn)
       hn
@@ -19,7 +19,7 @@ class ResultSetIterator[T](resultSet: ResultSet, rowHandler: ResultSet => T) ext
     }
 
   override def next(): T = {
-    if(!hasNext) {
+    if (!hasNext) {
       throw new Exception("end of result set")
     } else {
       checkNext = None
@@ -93,7 +93,8 @@ class FlywayMigrationSpec extends FunSpec with Matchers {
         r.getString("FIELD")
       }
       descJobsIt.toList should be (List(
-        "JOB_ID", "CONTEXT_NAME", "BIN_ID", "CLASSPATH", "START_TIME", "END_TIME", "ERROR", "ERROR_CLASS", "ERROR_STACK_TRACE"))
+        "JOB_ID", "CONTEXT_NAME", "BIN_ID", "CLASSPATH",
+        "START_TIME", "END_TIME", "ERROR", "ERROR_CLASS", "ERROR_STACK_TRACE"))
 
       val descConfigs = sqlConn.createStatement().executeQuery("SHOW COLUMNS FROM CONFIGS")
       val descConfigsIt = ResultSetIterator(descConfigs){ r: ResultSet =>

@@ -337,7 +337,8 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       val finishedJob: JobInfo = JobInfo("test-finished", "test", jarInfo, "test-class", dt1, dt2, None)
       val errorJob: JobInfo = JobInfo("test-error", "test", jarInfo, "test-class", dt1, dt2, someError)
       val runningJob: JobInfo = JobInfo("test-running", "test", jarInfo, "test-class", dt1, None, None)
-      val runningJobWithContext: JobInfo = JobInfo("test-running-with-context", "context", jarInfo, "test-class", dt1, None, None)
+      val runningJobWithContext: JobInfo =
+        JobInfo("test-running-with-context", "context", jarInfo, "test-class", dt1, None, None)
       dao.saveJobInfo(finishedJob)
       dao.saveJobInfo(runningJob)
       dao.saveJobInfo(runningJobWithContext)
