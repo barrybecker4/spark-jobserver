@@ -22,7 +22,7 @@ import org.slf4j.LoggerFactory
 import java.util.concurrent.TimeoutException
 
 object SJSAuthenticatorSpec {
-    //edit this with your real LDAP server information, just remember not to 
+  //edit this with your real LDAP server information, just remember not to
   // check it in....
   val LdapIniConfig = """
 # use this for basic ldap authorization, without group checking
@@ -74,7 +74,7 @@ goodguy = winnebago:drive:eagle5
 class SJSAuthenticatorSpec extends HttpService with SJSAuthenticator with FunSpecLike
     with ScalatestRouteTest with Matchers with BeforeAndAfter with BeforeAndAfterAll {
 
-  def actorRefFactory = system
+  def actorRefFactory: ActorSystem = system
 
 
   //set this to true to check your real ldap server
@@ -121,13 +121,14 @@ class SJSAuthenticatorSpec extends HttpService with SJSAuthenticator with FunSpe
   val testUserInvalid = "no-user"
   val testUserInvalidPassword = "pw"
 
-  override def afterAll():Unit = {
+  override def afterAll(): Unit = {
     TestKit.shutdownActorSystem(system)
   }
 
   describe("SJSAuthenticator") {
     it("should allow user with valid role/group") {
-      explicitValidation(new UserPass(testUserWithValidGroup, testUserWithValidGroupPassword), logger) should equal(Some(new AuthInfo(User(testUserWithValidGroup))))
+      explicitValidation(UserPass(testUserWithValidGroup, testUserWithValidGroupPassword), logger) should
+        equal(Some(new AuthInfo(User(testUserWithValidGroup))))
     }
 
     it("should check role/group when checking is activated") {
@@ -136,11 +137,13 @@ class SJSAuthenticatorSpec extends HttpService with SJSAuthenticator with FunSpe
       } else {
         Some(new AuthInfo(User(testUserWithoutValidGroup)))
       }
-      explicitValidation(new UserPass(testUserWithoutValidGroup, testUserWithoutValidGroupPassword), logger) should equal(expected)
+      explicitValidation(
+        UserPass(testUserWithoutValidGroup, testUserWithoutValidGroupPassword), logger) should
+        equal(expected)
     }
 
     it("should not allow invalid user") {
-      explicitValidation(new UserPass(testUserInvalid, testUserInvalidPassword), logger) should equal(None)
+      explicitValidation(UserPass(testUserInvalid, testUserInvalidPassword), logger) should equal(None)
     }
   }
 
