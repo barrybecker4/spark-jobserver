@@ -47,10 +47,10 @@ pushd "${bin}/.." > /dev/null
          bin/server_start.sh
          bin/server_stop.sh
          bin/kill-process-tree.sh
-         bin/manager_start.sh
          bin/setenv.sh
          ${CONFIG_DIR}/${ENV}.conf
          config/shiro.ini
+         config/log4j-cluster.properties
          config/log4j-server.properties"
 
   rm -rf $WORK_DIR

@@ -1,10 +1,6 @@
-## Configuring Job Server for YARN
+## Configuring Job Server for YARN in client mode with docker
 
-(Looking for contributors for this page)
-
-(I would like to thank Jon Buffington for sharing the config tips below.... @velvia)
-
-Note:  This is for yarn with docker.  If you are looking to deploy on a yarn cluster via EMR, then this link would be more useful [EMR](https://github.com/spark-jobserver/spark-jobserver/blob/master/doc/EMR.md)
+See also running in [cluster mode](cluster.md), running [YARN on EMR](EMR.md) and running on [Mesos](mesos.md).
 
 ### Configuring the Spark-Jobserver Docker package to run in Yarn-Client Mode
 
@@ -19,11 +15,10 @@ Files we need:
 - dockerfile
 - cluster-config directory with hdfs-site.xml and yarn-site.xml (You should have these files already)
 
-Example docker.conf (important settings are marked with # important):
+Example docker.conf:
 
     spark {
-      master = "yarn-client" # important
-      master = ${?SPARK_MASTER}
+      master = yarn
     
       # Default # of CPUs for jobs to use for Spark standalone cluster
       job-number-cpus = 4
@@ -85,7 +80,7 @@ Now that we have a docker.conf that should work we can create our dockerfile to 
 
 dockerfile:
 
-    FROM velvia/spark-jobserver:0.6.1
+    FROM sparkjobserver/spark-jobserver:0.7.0.mesos-0.25.0.spark-1.6.2
     EXPOSE 32456-32472                                    # Expose driver port range (spark.driver.port + 16)
     ADD /path/to/your/docker.conf /app/docker.conf        # Add the docker.conf to the container
     ADD /path/to/your/cluster-config /app/cluster-config  # Add the yarn-site.xml and hfds-site.xml to the container
@@ -99,8 +94,8 @@ Your dockercontainer is now ready to be build:
 Output should look like this:
 
     Sending build context to Docker daemon  21.5 kB
-    Step 0 : FROM velvia/spark-jobserver:0.5.2
-     ---> a41dbd362a7d
+    Step 0 : FROM sparkjobserver/spark-jobserver:0.7.0.mesos-0.25.0.spark-1.6.2
+     ---> 7a188f2d0dff
     Step 1 : EXPOSE 32456-32472
      ---> f1c91bbaa2d8
     Step 2 : ADD ./docker.conf /app/docker.conf
@@ -128,6 +123,16 @@ The _start-server.sh_ script does not contain a ```--master``` option. In some c
 
 ```
 --master yarn-client
+```
+
+### Modifying the &lt;environment&gt;.sh script
+Replace `MANAGER_*` variables with
+```
+MANAGER_JAR_FILE="$appdir/spark-job-server.jar"
+MANAGER_CONF_FILE="$(basename $conffile)"
+MANAGER_EXTRA_JAVA_OPTIONS=
+MANAGER_EXTRA_SPARK_CONFS="spark.yarn.submit.waitAppCompletion=false|spark.files=$appdir/log4jcluster.properties,$conffile"
+MANAGER_LOGGING_OPTS="-Dlog4j.configuration=log4j-cluster.properties"
 ```
 
 ### Important Context Settings for yarn

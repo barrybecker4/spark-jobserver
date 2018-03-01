@@ -11,6 +11,7 @@ import java.nio.file.{Files, Paths}
 import scala.concurrent.Future
 import scala.util.{Failure, Success, Try}
 import spark.jobserver.common.akka.InstrumentedActor
+import spark.jobserver.util.NoSuchBinaryException
 
 // Messages to JarManager actor
 
@@ -32,7 +33,9 @@ case class StoreLocalBinaries(localBinaries: Map[String, (BinaryType, String)])
 case object InvalidBinary
 case object BinaryStored
 case object BinaryDeleted
+case object NoSuchBinary
 case class BinaryStorageFailure(ex: Throwable)
+case class BinaryDeletionFailure(ex: Throwable)
 
 /**
  * An Actor that manages the jars stored by the job server.   It's important that threads do not try to
@@ -68,7 +71,7 @@ class BinaryManager(jobDao: ActorRef) extends InstrumentedActor {
       val successF =
         localBinaries.foldLeft(Future.successful[Boolean](true)) { (succ, pair) =>
          succ.flatMap{s =>
-           if(!s) {
+           if (!s) {
              Future.successful(false)
            } else {
              val (appName, (binaryType, binPath)) = pair
@@ -106,6 +109,12 @@ class BinaryManager(jobDao: ActorRef) extends InstrumentedActor {
 
     case DeleteBinary(appName) =>
       logger.info(s"Deleting binary $appName")
-      deleteBinary(appName).pipeTo(sender)
+      deleteBinary(appName).map {
+        case Success(_) => BinaryDeleted
+        case Failure(ex) => ex match {
+          case e: NoSuchBinaryException => NoSuchBinary
+          case _ => BinaryDeletionFailure(ex)
+        }
+      }.pipeTo(sender)
   }
 }

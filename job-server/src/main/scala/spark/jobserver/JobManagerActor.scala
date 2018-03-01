@@ -1,46 +1,60 @@
 package spark.jobserver
 
+import java.io.File
 import java.net.{URI, URL}
 import java.util.concurrent.Executors._
 import java.util.concurrent.atomic.AtomicInteger
 
-import akka.actor.{ActorRef, PoisonPill, Props}
+import akka.actor.{ActorRef, PoisonPill, Props, ReceiveTimeout, Identify, ActorIdentity, Terminated}
 import com.typesafe.config.Config
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.{SparkConf, SparkEnv}
+import org.apache.spark.scheduler.SparkListener
+import org.apache.spark.scheduler.SparkListenerApplicationEnd
 import org.joda.time.DateTime
 import org.scalactic._
-import spark.jobserver.api.JobEnvironment
+import spark.jobserver.api.{JobEnvironment, DataFileCache}
 import spark.jobserver.context.{JobContainer, SparkContextFactory}
-import spark.jobserver.io.{BinaryInfo, JobDAOActor, JobInfo}
+import spark.jobserver.io.{BinaryInfo, JobDAOActor, JobInfo, RemoteFileCache}
 import spark.jobserver.util.{ContextURLClassLoader, SparkJobUtils}
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
+import scala.concurrent.duration._
 import spark.jobserver.common.akka.InstrumentedActor
 
 object JobManagerActor {
   // Messages
-  case class Initialize(resultActorOpt: Option[ActorRef])
+  case class Initialize(contextConfig: Config, resultActorOpt: Option[ActorRef],
+                        dataFileActor: ActorRef)
   case class StartJob(appName: String, classPath: String, config: Config,
                       subscribedEvents: Set[Class[_]])
   case class KillJob(jobId: String)
   case class JobKilledException(jobId: String) extends Exception(s"Job $jobId killed")
+  case class ContextTerminatedException(contextName: String)
+    extends Exception(s"Unexpected termination of context $contextName")
 
   case object GetContextConfig
   case object SparkContextStatus
+  case object GetContexData
+
+  case class DeleteData(name: String)
 
   // Results/Data
   case class ContextConfig(contextName: String, contextConfig: SparkConf, hadoopConfig: Configuration)
   case class Initialized(contextName: String, resultActor: ActorRef)
   case class InitError(t: Throwable)
   case class JobLoadingError(err: Throwable)
+  case class ContexData(appId: String, url: Option[String])
   case object SparkContextAlive
   case object SparkContextDead
 
+
+
   // Akka 2.2.x style actor props for actor creation
-  def props(contextConfig: Config, daoActor: ActorRef): Props = Props(classOf[JobManagerActor],
-    contextConfig, daoActor)
+  def props(daoActor: ActorRef, supervisorActorAddress: String = "",
+      initializationTimeout: FiniteDuration = 30.seconds): Props =
+      Props(classOf[JobManagerActor], daoActor, supervisorActorAddress, initializationTimeout)
 }
 
 /**
@@ -71,7 +85,8 @@ object JobManagerActor {
  *   }
  * }}}
  */
-class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends InstrumentedActor {
+class JobManagerActor(daoActor: ActorRef, supervisorActorAddress: String,
+    initializationTimeout: FiniteDuration) extends InstrumentedActor {
 
   import CommonMessages._
   import JobManagerActor._
@@ -95,24 +110,36 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
   private val jobCacheEnabled = Try(config.getBoolean("spark.job-cache.enabled")).getOrElse(false)
   // Use Spark Context's built in classloader when SPARK-1230 is merged.
   private val jarLoader = new ContextURLClassLoader(Array[URL](), getClass.getClassLoader)
-  private val contextName = contextConfig.getString("context.name")
-  private val isAdHoc = Try(contextConfig.getBoolean("is-adhoc")).getOrElse(false)
 
-  //NOTE: Must be initialized after sparkContext is created
-  private var jobCache: JobCache = _
-
+  // NOTE: Must be initialized after cluster joined
+  private var contextConfig: Config = _
+  private var contextName: String = _
+  private var isAdHoc: Boolean = _
   private var statusActor: ActorRef = _
   protected var resultActor: ActorRef = _
   private var factory: SparkContextFactory = _
+  private var remoteFileCache: RemoteFileCache = _
+
+  // NOTE: Must be initialized after sparkContext is created
+  private var jobCache: JobCache = _
 
   private val jobServerNamedObjects = new JobServerNamedObjects(context.system)
 
+  if (!supervisorActorAddress.isEmpty()) {
+    logger.info(s"Sending identify message to supervisor at ${supervisorActorAddress}")
+    context.setReceiveTimeout(initializationTimeout)
+    context.actorSelection(supervisorActorAddress) ! Identify(1)
+  }
+
   private def getEnvironment(_jobId: String): JobEnvironment = {
     val _contextCfg = contextConfig
-    new JobEnvironment {
+    new JobEnvironment with DataFileCache {
       def jobId: String = _jobId
       def namedObjects: NamedObjects = jobServerNamedObjects
       def contextConfig: Config = _contextCfg
+      def getDataFile(dataFile: String): File = {
+        remoteFileCache.getDataFile(dataFile)
+      }
     }
   }
 
@@ -121,10 +148,49 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
     Option(jobContext).foreach(_.stop())
   }
 
+  // Handle external kill events (e.g. killed via YARN)
+  private def sparkListener = {
+    new SparkListener() {
+      override def onApplicationEnd(event: SparkListenerApplicationEnd) {
+        logger.info("Got Spark Application end event, stopping job manager.")
+        self ! PoisonPill
+      }
+    }
+  }
+
   def wrappedReceive: Receive = {
-    case Initialize(resOpt) =>
+    case ActorIdentity(memberActors, supervisorActorRef) =>
+      supervisorActorRef.foreach { ref =>
+        val actorName = ref.path.name
+        if (actorName == "context-supervisor") {
+          logger.info("Received supervisor's response for Identify message. Adding a watch.")
+          context.watch(ref)
+
+          logger.info("ActorIdentity message received from master, stopping the timer.")
+          context.setReceiveTimeout(Duration.Undefined) // Deactivate receive timeout
+        }
+      }
+
+    case Terminated(actorRef) =>
+      if (actorRef.path.name == "context-supervisor") {
+        logger.warn(s"Supervisor actor (${actorRef.path.address.toString}) terminated!" +
+            s" Killing myself (${self.path.address.toString})!")
+        self ! PoisonPill
+      }
+
+    case ReceiveTimeout =>
+        logger.warn("Did not receive ActorIdentity message from master." +
+           s"Killing myself (${self.path.address.toString})!")
+        self ! PoisonPill
+
+    case Initialize(ctxConfig, resOpt, dataManagerActor) =>
+      contextConfig = ctxConfig
+      logger.info("Starting context with config:\n" + contextConfig.root.render)
+      contextName = contextConfig.getString("context.name")
+      isAdHoc = Try(contextConfig.getBoolean("is-adhoc")).getOrElse(false)
       statusActor = context.actorOf(JobStatusActor.props(daoActor))
       resultActor = resOpt.getOrElse(context.actorOf(Props[JobResultActor]))
+      remoteFileCache = new RemoteFileCache(self, dataManagerActor)
 
       try {
         // Load side jars first in case the ContextFactory comes from it
@@ -133,6 +199,7 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
         }
         factory = getContextFactory()
         jobContext = factory.makeContext(config, contextConfig, contextName)
+        jobContext.sparkContext.addSparkListener(sparkListener)
         sparkEnv = SparkEnv.get
         jobCache = new JobCacheImpl(jobCacheSize, daoActor, jobContext.sparkContext, jarLoader)
         getSideJars(contextConfig).foreach { jarUri => jobContext.sparkContext.addJar(jarUri) }
@@ -179,6 +246,7 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
         }
       }
     }
+
     case GetContextConfig => {
       if (jobContext.sparkContext == null) {
         sender ! SparkContextDead
@@ -195,6 +263,32 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
         }
       }
     }
+
+    case GetContexData => {
+      if (jobContext.sparkContext == null) {
+        sender ! SparkContextDead
+      } else {
+        try {
+          val appId = jobContext.sparkContext.applicationId;
+          val webUiUrl = jobContext.sparkContext.uiWebUrl
+          val msg = if (webUiUrl.isDefined) {
+            ContexData(appId, Some(webUiUrl.get))
+          } else {
+            ContexData(appId, None)
+          }
+          sender ! msg
+        } catch {
+          case e: Exception => {
+            logger.error("SparkContext does not exist!")
+            sender ! SparkContextDead
+          }
+        }
+      }
+    }
+
+    case DeleteData(name: String) => {
+      remoteFileCache.deleteDataFile(name)
+    }
   }
 
   def startJobInternal(appName: String,
@@ -208,7 +302,6 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
     import spark.jobserver.context._
 
     import scala.concurrent.Await
-    import scala.concurrent.duration._
 
     def failed(msg: Any): Option[Future[Any]] = {
       sender ! msg
@@ -230,9 +323,9 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
     val jobId = java.util.UUID.randomUUID().toString
     val jobContainer = factory.loadAndValidateJob(appName, lastUploadTime,
                                                   classPath, jobCache) match {
-      case Good(container)       => container
+      case Good(container) => container
       case Bad(JobClassNotFound) => return failed(NoSuchClass)
-      case Bad(JobWrongType)     => return failed(WrongJobType)
+      case Bad(JobWrongType) => return failed(WrongJobType)
       case Bad(JobLoadError(ex)) => return failed(JobLoadingError(ex))
     }
 
@@ -343,7 +436,7 @@ class JobManagerActor(contextConfig: Config, daoActor: ActorRef) extends Instrum
     val e : RuntimeException = new RuntimeException("%s: %s"
       .format(cause.getClass.getName ,cause.getMessage))
     e.setStackTrace(cause.getStackTrace)
-    e
+     e
   }
 
   // Gets the very first exception that caused the current exception to be thrown.

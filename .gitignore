@@ -9,8 +9,15 @@ test-reports/
 .idea*
 .vagrant
 *.pyc
+.DS_Store
 
 # ignore deployment configs
+config/*.conf
+config/*.sh
+config/*.ini
+job-server/config/*.conf
+job-server/config/*.ini
+job-server-extras/spark-warehouse/
 metastore_db/
 
 #ignore generated config

@@ -2,6 +2,7 @@ package spark.jobserver
 
 import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.testkit.{ImplicitSender, TestKit}
+import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfter, BeforeAndAfterAll, FunSpecLike, Matchers}
 import org.joda.time.DateTime
 import scala.concurrent._
@@ -32,11 +33,13 @@ with FunSpecLike with Matchers with BeforeAndAfter with BeforeAndAfterAll {
   var actor: ActorRef = _
   var dao: JobDAO = _
   var daoActor: ActorRef = _
+  var dataManager: ActorRef = _
 
   before {
     dao = new InMemoryDAO
     daoActor = system.actorOf(JobDAOActor.props(dao))
-    val supervisor = system.actorOf(Props(classOf[LocalContextSupervisorActor], daoActor))
+    dataManager = system.actorOf(Props.empty)
+    val supervisor = system.actorOf(Props(classOf[LocalContextSupervisorActor], daoActor, dataManager))
     actor = system.actorOf(Props(classOf[JobInfoActor], dao, supervisor))
   }
 
@@ -47,9 +50,9 @@ with FunSpecLike with Matchers with BeforeAndAfter with BeforeAndAfterAll {
   describe("JobInfoActor") {
     it("should store a job configuration") {
       actor ! StoreJobConfig(jobId, jobConfig)
-      expectMsg(JobConfigStored)
-      val jobConfigs = Await.result(dao.getJobConfigs, 60 seconds)
-      jobConfigs.get(jobId) should be (Some(jobConfig))
+      expectMsg(10 second, JobConfigStored)
+      val storedJobConfig = Await.result(dao.getJobConfig(jobId), 60 seconds)
+      storedJobConfig should be (Some(jobConfig))
     }
 
     it("should return a job configuration when the jobId exists") {
@@ -118,7 +121,7 @@ with FunSpecLike with Matchers with BeforeAndAfter with BeforeAndAfterAll {
       val dt3 = dt2.plusMinutes(5)
       val dt4 = dt3.plusMinutes(5)
       val binaryInfo = BinaryInfo("demo", BinaryType.Jar, dt1)
-      val someError =  Some(new Throwable("test-error"))
+      val someError = Some(ErrorData(new Throwable("test-error")))
       val runningJob = JobInfo("running-1", "context", binaryInfo, "com.abc.meme", dt1, None, None)
       val errorJob = JobInfo("error-1", "context", binaryInfo, "com.abc.meme", dt2, None, someError)
       val finishedJob = JobInfo("finished-1", "context", binaryInfo, "com.abc.meme", dt3, Some(dt4), None)
@@ -151,7 +154,7 @@ with FunSpecLike with Matchers with BeforeAndAfter with BeforeAndAfterAll {
     }
 
     it("should return job info if job result is requested for running or errored out job") {
-      val someError: Option[Throwable] = Some(new Throwable("test-error"))
+      val someError = Some(ErrorData(new Throwable("test-error")))
       val dt1 = DateTime.parse("2013-05-28T00Z")
       val dt2 = DateTime.parse("2013-05-29T00Z")
       val jobInfo1 =
