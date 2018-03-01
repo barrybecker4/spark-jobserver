@@ -96,10 +96,10 @@ class StubbedAkkaClusterSupervisorActor(daoActor: ActorRef,
   }
 
 class StubbedJobManagerActor(contextConfig: Config) extends Actor {
-  def receive: Unit = {
-    case JobManagerActor.Initialize(contextConfig, _, _) =>
+  def receive = {
+    case JobManagerActor.Initialize(contxtConfig, _, _) =>
       val resultActor = context.system.actorOf(Props(classOf[JobResultActor]))
-      sender() ! JobManagerActor.Initialized(contextConfig.getString("context.name"), resultActor)
+      sender() ! JobManagerActor.Initialized(contxtConfig.getString("context.name"), resultActor)
     case JobManagerActor.GetContexData =>
       val appId = Try(contextConfig.getString("manager.context.appId")).getOrElse("")
       val webUiUrl = Try(contextConfig.getString("manager.context.webUiUrl")).getOrElse("")
@@ -115,7 +115,7 @@ class AkkaClusterSupervisorActorSpec
   extends TestKit(AkkaClusterSupervisorActorSpec.system) with ImplicitSender
       with FunSpecLike with Matchers with BeforeAndAfter with BeforeAndAfterAll {
 
-  val contextInitTimeout = 10.seconds.dilated
+  val contextInitTimeout = 15.seconds.dilated
   var supervisor: ActorRef = _
   var dao: JobDAO = _
   var daoActor: ActorRef = _
@@ -278,7 +278,8 @@ class AkkaClusterSupervisorActorSpec
     }
 
     it("should return valid appId and webUiUrl if context is running") {
-      val configWithContextInfo = ConfigFactory.parseString("manager.context.webUiUrl=dummy-url,manager.context.appId=appId-dummy")
+      val configWithContextInfo =
+        ConfigFactory.parseString("manager.context.webUiUrl=dummy-url,manager.context.appId=appId-dummy")
                 .withFallback(contextConfig)
       supervisor ! AddContext("test-context10", configWithContextInfo)
       expectMsg(contextInitTimeout, ContextInitialized)
