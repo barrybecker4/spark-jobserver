@@ -22,7 +22,7 @@ class ChunkEncodingActor(ctx: RequestContext,
                          byteIterator: Iterator[_]) extends Actor with ActorLogging {
   // we use the successful sending of a chunk as trigger for sending the next chunk
   ctx.responder ! ChunkedResponseStart(
-    HttpResponse(entity = HttpEntity(MediaTypes.`application/json`,
+    HttpResponse(entity = HttpEntity(MediaTypes.`application/json`.withCharset(HttpCharsets.`UTF-8`),
       byteIterator.take(chunkSize).map {
         case c: Byte => c
       }.toArray))).withAck(Ok(byteIterator))
