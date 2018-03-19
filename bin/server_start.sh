@@ -35,6 +35,7 @@ fi
 cmd='$SPARK_HOME/bin/spark-submit --class $MAIN --driver-memory $JOBSERVER_MEMORY
   --conf "spark.executor.extraJavaOptions=$LOGGING_OPTS"
   --driver-java-options "$GC_OPTS_SERVER $JAVA_OPTS_SERVER $LOGGING_OPTS $CONFIG_OVERRIDES"
+  --driver-class-path "/usr/share/java/mysql-connector-java-5.1.38.jar"
   $@ $appdir/spark-job-server.jar $conffile'
 if [ -z "$JOBSERVER_FG" ]; then
   eval $cmd > $LOG_DIR/server_start.log 2>&1 < /dev/null &
