@@ -43,6 +43,7 @@ object AkkaClusterSupervisorActorSpec {
       }
       jobserver.job-result-cache-size = 100
       jobserver.context-creation-timeout = 5 s
+      jobserver.dao-timeout = 3 s
       context-per-jvm = true
       contexts {
         config-context {
@@ -83,14 +84,14 @@ class StubbedAkkaClusterSupervisorActor(daoActor: ActorRef,
   }
 
     override protected def launchDriver(name: String, contextConfig: Config,
-                                        contextActorName: String): Boolean = {
+                                        contextActorName: String): (Boolean, String) = {
       // Create probe and cluster and join back the master
       Try(contextConfig.getBoolean("driver.fail")).getOrElse(false) match {
-        case true => false
+        case true => (false, "")
         case false =>
           val managerActorAndCluster = createSlaveClusterWithJobManager(contextActorName, contextConfig)
           managerActorAndCluster._1.join(selfAddress)
-          true
+          (true, "")
       }
     }
   }
