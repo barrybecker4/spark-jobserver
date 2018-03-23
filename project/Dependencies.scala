@@ -1,4 +1,4 @@
-import sbt._
+import sbt.{Resolver, _}
 import Versions._
 import ExclusionRules._
 
@@ -88,6 +88,7 @@ object Dependencies {
     "Typesafe Repo" at "http://repo.typesafe.com/typesafe/releases/",
     "sonatype snapshots" at "https://oss.sonatype.org/content/repositories/snapshots/",
     "spray repo" at "http://repo.spray.io",
-    "ESI Artifactory" at "http://esi-components.esi-group.com/artifactory/release/"
+    "ESI Artifactory" at "http://esi-components.esi-group.com/artifactory/release/",
+    Resolver.mavenLocal
   )
 }
