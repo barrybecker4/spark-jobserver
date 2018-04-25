@@ -25,7 +25,7 @@ pipeline {
         stage ('build') {
             steps {
                 echo "PATH is: $PATH"
-                cmd("sbt assembly")
+                cmd("sbt ++2.11.11 assembly")
             }
         }
 
