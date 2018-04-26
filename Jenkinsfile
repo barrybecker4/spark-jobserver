@@ -2,6 +2,7 @@
 
 /**
  * PATH requirements: sbt, curl, jdk8  (configure in jenkins node)
+ * Requires: python and pyhocon, py4j, pyspark to be installed on the build node for the tests to pass.
  */
 pipeline {
     agent {
