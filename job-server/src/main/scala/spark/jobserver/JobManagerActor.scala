@@ -317,7 +317,7 @@ class JobManagerActor(daoActor: ActorRef, supervisorActorAddress: String,
       None
     }
 
-    val daoAskTimeout = Timeout(3 seconds)
+    val daoAskTimeout = Timeout(17 seconds)  // used to be 3, but we hit that
     // TODO: refactor so we don't need Await, instead flatmap into more futures
     val resp = Await.result(
       (daoActor ? JobDAOActor.GetLastUploadTimeAndType(appName))(daoAskTimeout).
