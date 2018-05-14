@@ -41,7 +41,7 @@ fi
 #JARS=@MINESET_TMP@/spark-jobserver/jars
 #cp -p $ASSEMBLY $JARS/mineset-spark.jar
 
-#ls -1 @MINESET_TMP@/spark-jobserver/filedao/data/mineset-spark-*.jar | \
+#ls -1 @MINESET_TMP@/spark-jobserver/sqldao/data/mineset-spark-*.jar | \
 #    grep -v `date +%Y-%m-%d` | xargs rm -f
 
 
