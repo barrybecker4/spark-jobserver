@@ -369,7 +369,7 @@ class JobSqlDAO(config: Config) extends JobDAO with FileCacher {
     val errorStackTrace = jobInfo.error.map(e => e.stackTrace)
     val row = (jobInfo.jobId, jobInfo.contextName, jarId, jobInfo.classPath,
       startTime, endTime, error, errorClass, errorStackTrace)
-    if(Await.result(db.run(jobs.insertOrUpdate(row)), 60 seconds) == 0){
+    if(Await.result(db.run(jobs.insertOrUpdate(row)), 20 minutes) == 0){
       throw new SlickException(s"Could not update ${jobInfo.jobId} in the database")
     }
   }
