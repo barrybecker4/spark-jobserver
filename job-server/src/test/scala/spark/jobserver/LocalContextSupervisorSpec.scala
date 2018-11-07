@@ -25,6 +25,7 @@ object LocalContextSupervisorSpec {
 |     jobserver.context-deletion-timeout = 2 s
       jobserver.yarn-context-creation-timeout = 40 s
       jobserver.named-object-creation-timeout = 60 s
+      jobserver.dao-timeout = 3 s
       contexts {
         olap-demo {
           num-cpu-cores = 4
@@ -174,8 +175,10 @@ class LocalContextSupervisorSpec extends TestKit(LocalContextSupervisorSpec.syst
       val (jobManager: ActorRef) = expectMsgType[ActorRef]
 
       jobManager ! PoisonPill
-      val msg = daoProbe.expectMsgType[CleanContextJobInfos]
-      msg.contextName shouldBe "c1"
+
+      // Since LocalContextSupervisor does not support contextId support yet,
+      // the class passes contextName in cleanContextJobInfos message.
+      daoProbe.expectMsgType[CleanContextJobInfos]
     }
   }
 }

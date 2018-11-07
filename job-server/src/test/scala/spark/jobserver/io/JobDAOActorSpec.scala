@@ -20,6 +20,7 @@ object JobDAOActorSpec {
   val dtplus1 = dt.plusHours(1)
 
   val cleanupProbe = TestProbe()(system)
+  val unblockingProbe = TestProbe()(system)
 
   object DummyDao extends JobDAO{
 
@@ -27,6 +28,7 @@ object JobDAOActorSpec {
                             uploadTime: DateTime, binaryBytes: Array[Byte]): Unit = {
       appName match {
         case "failOnThis" => throw new Exception("deliberate failure")
+        case "blockDAO" => unblockingProbe.expectMsg(5.seconds, "unblock")
         case _ => //Do nothing
       }
     }
@@ -40,11 +42,16 @@ object JobDAOActorSpec {
     override def retrieveBinaryFile(appName: String,
                                     binaryType: BinaryType, uploadTime: DateTime): String = ???
 
-    override def saveContextInfo(contextInfo: ContextInfo): Unit = ???
+    override def saveContextInfo(contextInfo: ContextInfo): Unit = {
+      contextInfo.id match {
+        case "success" =>
+        case "failure" => throw new Exception("deliberate failure")
+      }
+    }
 
     override def getContextInfo(id: String): Future[Option[ContextInfo]] = ???
 
-    override def getContextInfos(limit: Option[Int] = None, statusOpt: Option[String] = None):
+    override def getContextInfos(limit: Option[Int] = None, statuses: Option[Seq[String]] = None):
       Future[Seq[ContextInfo]] = ???
 
     override def getContextInfoByName(name: String): Future[Option[ContextInfo]] = ???
@@ -54,7 +61,8 @@ object JobDAOActorSpec {
     override def getJobInfos(limit: Int, status: Option[String]): Future[Seq[JobInfo]] =
       Future.successful(Seq())
 
-    override def getRunningJobInfosForContextName(contextName: String): Future[Seq[JobInfo]] = ???
+    override def getJobInfosByContextId(
+        contextId: String, jobStatuses: Option[Seq[String]] = None): Future[Seq[JobInfo]] = ???
 
     override def getJobInfo(jobId: String): Future[Option[JobInfo]] = ???
 
@@ -103,6 +111,24 @@ class JobDAOActorSpec extends TestKit(JobDAOActorSpec.system) with ImplicitSende
       }
     }
 
+    it("should not block other calls to DAO if save binary is taking too long") {
+      daoActor ! SaveBinary("blockDAO", BinaryType.Jar, DateTime.now, Array[Byte]())
+
+      daoActor ! GetJobInfos(1)
+      expectMsg(1.seconds, JobInfos(Seq()))
+
+      daoActor ! SaveBinary("succeed", BinaryType.Jar, DateTime.now, Array[Byte]())
+      expectMsg(1.seconds, SaveBinaryResult(Success({})))
+
+      daoActor ! DeleteBinary("failOnThis")
+      expectMsgPF(1.seconds){
+        case DeleteBinaryResult(Failure(ex)) if ex.getMessage == "deliberate failure" =>
+      }
+
+      unblockingProbe.ref ! "unblock"
+      expectMsg(4.seconds, SaveBinaryResult(Success({})))
+    }
+
     it("should respond when deleting Binary completes successfully") {
       daoActor ! DeleteBinary("succeed")
       expectMsg(DeleteBinaryResult(Success({})))
@@ -131,6 +157,19 @@ class JobDAOActorSpec extends TestKit(JobDAOActorSpec.system) with ImplicitSende
     it("should request jobs cleanup") {
       daoActor ! CleanContextJobInfos("context", DateTime.now())
       cleanupProbe.expectMsg("context")
+    }
+
+    it("should respond with successful message if dao operation was successful") {
+      daoActor ! SaveContextInfo(ContextInfo("success", "name", "config", None,
+        DateTime.now(), None, ContextStatus.Running, None))
+      expectMsg(SavedSuccessfully)
+    }
+
+    it("should respond with failure message if dao operation has an exception") {
+      daoActor ! SaveContextInfo(ContextInfo("failure", "name", "config", None,
+        DateTime.now(), None, ContextStatus.Running, None))
+      val failedMsg = expectMsgType[SaveFailed]
+      failedMsg.error.getMessage should be("deliberate failure")
     }
   }
 

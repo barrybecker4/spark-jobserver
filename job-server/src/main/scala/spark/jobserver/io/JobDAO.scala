@@ -64,14 +64,11 @@ object ErrorData {
 
 // Both a response and used to track job progress
 // NOTE: if endTime is not None, then the job has finished.
-case class JobInfo(jobId: String, contextName: String,
-                   binaryInfo: BinaryInfo, classPath: String,
+case class JobInfo(jobId: String, contextId: String, contextName: String,
+                   binaryInfo: BinaryInfo, classPath: String, state: String,
                    startTime: DateTime, endTime: Option[DateTime],
                    error: Option[ErrorData]) {
   def jobLengthMillis: Option[Long] = endTime.map { end => new Duration(startTime, end).getMillis }
-
-  def isRunning: Boolean = endTime.isEmpty
-  def isErroredOut: Boolean = endTime.isDefined && error.isDefined
 }
 
 case class ContextInfo(id: String, name: String,
@@ -85,6 +82,9 @@ object JobStatus {
   val Finished = "FINISHED"
   val Started = "STARTED"
   val Killed = "KILLED"
+  val Restarting = "RESTARTING"
+  def getFinalStates(): Seq[String] = Seq(Error, Finished, Killed)
+  def getNonFinalStates(): Seq[String] = Seq(Started, Running, Restarting)
 }
 
 object ContextStatus {
@@ -94,6 +94,9 @@ object ContextStatus {
   val Finished = "FINISHED"
   val Started = "STARTED"
   val Killed = "KILLED"
+  val Restarting = "RESTARTING"
+  def getFinalStates(): Seq[String] = Seq(Error, Finished, Killed)
+  def getNonFinalStates(): Seq[String] = Seq(Started, Running, Stopping, Restarting)
 }
 
 object JobDAO {
@@ -161,7 +164,7 @@ trait JobDAO {
    *
    * @return
    */
-  def getContextInfos(limit: Option[Int] = None, statusOpt: Option[String] = None):
+  def getContextInfos(limit: Option[Int] = None, statuses: Option[Seq[String]] = None):
     Future[Seq[ContextInfo]]
 
   /**
@@ -188,7 +191,7 @@ trait JobDAO {
   /**
     * Return all job ids to their job info.
     */
-  def getRunningJobInfosForContextName(contextName: String): Future[Seq[JobInfo]]
+  def getJobInfosByContextId(contextId: String, jobStatuses: Option[Seq[String]] = None): Future[Seq[JobInfo]]
 
   /**
     * Move all jobs running on context with given name to error state
@@ -196,13 +199,14 @@ trait JobDAO {
     * @param contextName name of the context
     * @param endTime time to put into job infos end time column
     */
-  def cleanRunningJobInfosForContext(contextName: String, endTime: DateTime): Future[Unit] = {
-    getRunningJobInfosForContextName(contextName).map { infos =>
-      JobDAO.logger.info("cleaning {} running jobs for {}", infos.size, contextName)
+  def cleanRunningJobInfosForContext(contextId: String, endTime: DateTime): Future[Unit] = {
+    import spark.jobserver.JobManagerActor.ContextTerminatedException
+    getJobInfosByContextId(contextId, Some(Seq(JobStatus.Running))).map { infos =>
+      JobDAO.logger.info("cleaning {} running jobs for {}", infos.size, contextId)
       for (info <- infos) {
         val updatedInfo = info.copy(
           endTime = Some(endTime),
-          error = Some(ErrorData(JobKilledException(info.jobId))))
+          error = Some(ErrorData(ContextTerminatedException(contextId))))
         saveJobInfo(jobInfo = updatedInfo)
       }
     }

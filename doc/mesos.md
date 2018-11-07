@@ -81,3 +81,7 @@ MANAGER_LOGGING_OPTS="-Dlog4j.configuration=log4j-cluster.properties"
     ```
     REMOTE_JOBSERVER_DIR=<path to job-server directory> # copy of job-server directory on all mesos agent nodes 
     ```
+
+## Configuring Job Server for supervised cluster mode
+
+* See the [supervise-mode document](https://github.com/spark-jobserver/spark-jobserver/blob/master/doc/supervise-mode.md)

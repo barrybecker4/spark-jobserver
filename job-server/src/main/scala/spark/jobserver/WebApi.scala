@@ -2,8 +2,8 @@ package spark.jobserver
 
 import java.util.NoSuchElementException
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
 
+import javax.net.ssl.SSLContext
 import akka.actor.{ActorRef, ActorSystem}
 import akka.pattern.ask
 import akka.util.Timeout
@@ -12,14 +12,15 @@ import spark.jobserver.common.akka.web.JsonUtils.AnyJsonFormat
 import spark.jobserver.common.akka.web.{CommonRoutes, WebService}
 import org.apache.shiro.SecurityUtils
 import org.apache.shiro.config.IniSecurityManagerFactory
+import org.apache.http.HttpStatus
 import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
 import spark.jobserver.JobManagerActor.JobKilledException
 import spark.jobserver.auth._
-import spark.jobserver.io.{BinaryType, ErrorData, JobInfo, JobStatus}
+import spark.jobserver.io.{BinaryType, ContextInfo, ErrorData, JobInfo, JobStatus}
 import spark.jobserver.routes.DataRoutes
 import spark.jobserver.util.{SSLContextFactory, SparkJobUtils}
-import spray.http.HttpHeaders.`Content-Type`
+import spray.http.HttpHeaders.{Location, `Content-Type`}
 import spray.http._
 import spray.httpx.SprayJsonSupport.sprayJsonMarshaller
 import spray.io.ServerSSLEngineProvider
@@ -88,20 +89,43 @@ object WebApi {
 
   def getJobReport(jobInfo: JobInfo, jobStarted: Boolean = false): Map[String, Any] = {
 
-    val statusMap = if (jobStarted) Map(StatusKey -> JobStatus.Started) else jobInfo match {
-      case JobInfo(_, _, _, _, _, None, _) => Map(StatusKey -> JobStatus.Running)
-      case JobInfo(_, _, _, _, _, _, Some(err))
-        if err.errorClass == classOf[JobKilledException].getName =>
-        Map(StatusKey -> JobStatus.Killed, ResultKey -> formatException(err))
-      case JobInfo(_, _, _, _, _, _, Some(err)) =>
-        Map(StatusKey -> JobStatus.Error, ResultKey -> formatException(err))
-      case JobInfo(_, _, _, _, _, Some(e), None) => Map(StatusKey -> "FINISHED")
+    val statusMap = jobInfo match {
+      case JobInfo(_, _, _, _, _, state, _, _, Some(err)) =>
+        Map(StatusKey -> state, ResultKey -> formatException(err))
+      case JobInfo(_, _, _, _, _, _, _, _, None) if jobStarted => Map(StatusKey -> JobStatus.Started)
+      case JobInfo(_, _, _, _, _, state, _, _, None) => Map(StatusKey -> state)
     }
     Map("jobId" -> jobInfo.jobId,
       "startTime" -> jobInfo.startTime.toString(),
       "classPath" -> jobInfo.classPath,
       "context" -> (if (jobInfo.contextName.isEmpty) "<<ad-hoc>>" else jobInfo.contextName),
+      "contextId" -> jobInfo.contextId,
       "duration" -> getJobDurationString(jobInfo)) ++ statusMap
+  }
+
+  def getContextReport(context: Any, appId: Option[String], url: Option[String]): Map[String, String] = {
+    import scala.collection.mutable
+    val map = mutable.Map.empty[String, String]
+    context match {
+      case contextInfo: ContextInfo =>
+        map("id") = contextInfo.id
+        map("name") = contextInfo.name
+        map("startTime") = contextInfo.startTime.toString()
+        map("endTime") = if (contextInfo.endTime.isDefined) contextInfo.endTime.get.toString else "Empty"
+        map("state") = contextInfo.state
+      case name: String =>
+        map("name") = name
+      case _ =>
+    }
+    (appId, url) match {
+      case (Some(id), Some(u)) =>
+        map("applicationId") = id
+        map("url") = u
+      case (Some(id), None) =>
+        map("applicationId") = id
+      case _ =>
+    }
+    map.toMap
   }
 }
 
@@ -349,12 +373,13 @@ class WebApi(system: ActorSystem,
     authenticate(authenticator) { authInfo =>
       (get & path(Segment)) { (contextName) =>
         respondWithMediaType(MediaTypes.`application/json`) { ctx =>
-          val future = supervisor ? GetSparkContexData(contextName)
+          val future = (supervisor ? GetSparkContexData(contextName))
           future.map {
-            case SparkContexData(name, appId, Some(url)) =>
-              ctx.complete(200, Map("context" -> contextName, "applicationId" -> appId, "url" -> url))
-            case SparkContexData(name, appId, None) =>
-              ctx.complete(200, Map("context" -> contextName, "applicationId" -> appId))
+            case SparkContexData(context, appId, url) =>
+              val stcode = 200;
+              val contextMap = getContextReport(context, appId, url)
+              logger.info("StatusCode: " + stcode + ", " + contextMap)
+              ctx.complete(stcode, contextMap)
             case NoSuchContext => notFound(ctx, s"can't find context with name $contextName")
             case UnexpectedError => ctx.complete(500, errMap("UNEXPECTED ERROR OCCURRED"))
           }.recover {
@@ -408,6 +433,9 @@ class WebApi(system: ActorSystem,
                     case ContextAlreadyExists => badRequest(ctx, "context " + contextName + " exists")
                     case ContextInitError(e) => ctx.complete(500, errMap(e, "CONTEXT INIT ERROR"));
                     case UnexpectedError => ctx.complete(500, errMap("UNEXPECTED ERROR OCCURRED"))
+                  }.recover {
+                    case e: Exception =>
+                      ctx.complete(500, errMap(e, "ERROR"));
                   }
                 }
               }
@@ -415,19 +443,32 @@ class WebApi(system: ActorSystem,
           }
         }
       } ~
-        delete {
+        (delete & path(Segment)) { (contextName) =>
           //  DELETE /contexts/<contextName>
           //  Stop the context with the given name.  Executors will be shut down and all cached RDDs
           //  and currently running jobs will be lost.  Use with care!
-          path(Segment) { (contextName) =>
-            val (cName, _) = determineProxyUser(config, authInfo, contextName)
-            val future = (supervisor ? StopContext(cName))(contextDeletionTimeout.seconds)
-            respondWithMediaType(MediaTypes.`application/json`) { ctx =>
-              future.map {
-                case ContextStopped => ctx.complete(StatusCodes.OK, successMap("Context stopped"))
-                case NoSuchContext => notFound(ctx, "context " + contextName + " not found")
-                case ContextStopError(e) => ctx.complete(500, errMap(e, "CONTEXT DELETE ERROR"))
-                case UnexpectedError => ctx.complete(500, errMap("UNEXPECTED ERROR OCCURRED"))
+          //  If force=true flag is provided, will kill the job forcefully
+          parameters('force.as[Boolean] ?) {
+            (forceOpt) => {
+              val force = forceOpt.getOrElse(false)
+              logger.info(s"DELETE /contexts/$contextName");
+              val (cName, _) = determineProxyUser(config, authInfo, contextName)
+              val future = (supervisor ?
+                StopContext(cName, force))(contextDeletionTimeout.seconds + 1.seconds)
+              respondWithMediaType(MediaTypes.`application/json`) { ctx =>
+                future.map {
+                  case ContextStopped => ctx.complete(StatusCodes.OK, successMap("Context stopped"))
+                  case ContextStopInProgress =>
+                    val response = HttpResponse(
+                      status = StatusCodes.Accepted, headers = List(Location(ctx.request.uri)))
+                    ctx.complete(response)
+                  case NoSuchContext => notFound(ctx, "context " + contextName + " not found")
+                  case ContextStopError(e) => ctx.complete(500, errMap(e, "CONTEXT DELETE ERROR"))
+                  case UnexpectedError => ctx.complete(500, errMap("UNEXPECTED ERROR OCCURRED"))
+                }.recover {
+                  case e: Exception =>
+                     ctx.complete(500, errMap(e, "ERROR"))
+                }
               }
             }
           }
@@ -521,6 +562,9 @@ class WebApi(system: ActorSystem,
               notFound(ctx, "No such job ID " + jobId)
             case cnf: Config =>
               ctx.complete(cnf.root().render(renderOptions))
+          }.recover {
+            case e: Exception =>
+              ctx.complete(500, errMap(e, "ERROR"));
           }
         }
       } ~
@@ -547,7 +591,13 @@ class WebApi(system: ActorSystem,
                     }
                   case _ =>
                     ctx.complete(jobReport)
+                }.recover {
+                  case e: Exception =>
+                    ctx.complete(500, errMap(e, "ERROR"));
                 }
+            }.recover {
+              case e: Exception =>
+                ctx.complete(500, errMap(e, "ERROR"));
             }
           }
         } ~
@@ -560,7 +610,7 @@ class WebApi(system: ActorSystem,
             future.map {
               case NoSuchJobId =>
                 notFound(ctx, "No such job ID " + jobId)
-              case JobInfo(_, contextName, _, classPath, _, None, _) =>
+              case JobInfo(_, _, contextName, _, _, classPath, _, None, _) =>
                 val jobManager = getJobManagerForContext(Some(contextName), config, classPath)
                 val future = jobManager.get ? KillJob(jobId)
                 future.map {
@@ -568,10 +618,15 @@ class WebApi(system: ActorSystem,
                 }.recover {
                   case e: Exception => ctx.complete(500, errMap(e, "ERROR"))
                 }
-              case JobInfo(_, _, _, _, _, _, Some(ex)) =>
+              case JobInfo(_, _, _, _, _, state, _, _, Some(ex)) if state.equals(JobStatus.Error) =>
                 ctx.complete(Map(StatusKey -> JobStatus.Error, "ERROR" -> formatException(ex)))
-              case JobInfo(_, _, _, _, _, Some(e), None) =>
+              case JobInfo(_, _, _, _, _, state, _, _, _)
+                if (state.equals(JobStatus.Finished) || state.equals(JobStatus.Killed)) =>
                 notFound(ctx, "No running job with ID " + jobId)
+              case _ => ctx.complete(500, errMap("Received an unexpected message"))
+            }.recover {
+              case e: Exception =>
+                ctx.complete(500, errMap(e, "ERROR"));
             }
           }
         } ~
@@ -670,6 +725,8 @@ class WebApi(system: ActorSystem,
                           ctx.complete(400, errMap("Invalid job type for this context"))
                         case JobLoadingError(err) =>
                           ctx.complete(500, errMap(err, "JOB LOADING FAILED"))
+                        case ContextStopInProgress =>
+                          ctx.complete(StatusCodes.Conflict, errMap("Context stop in progress"))
                         case NoJobSlotsAvailable(maxJobSlots) =>
                           val errorMsg = "Too many running jobs (" + maxJobSlots.toString +
                             ") for job context '" + contextOpt.getOrElse("ad-hoc") + "'"

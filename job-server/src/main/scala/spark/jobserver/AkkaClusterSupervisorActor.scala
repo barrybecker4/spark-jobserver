@@ -7,8 +7,9 @@ import java.util.concurrent.TimeUnit
 import akka.actor._
 import akka.pattern.ask
 import akka.cluster.Cluster
-import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent, MemberUp}
+import akka.cluster.ClusterEvent.{MemberUp, CurrentClusterState}
 import akka.util.Timeout
+
 import com.typesafe.config.{Config, ConfigFactory, ConfigRenderOptions}
 import spark.jobserver.util.{SparkJobUtils, ManagerLauncher}
 
@@ -18,14 +19,18 @@ import scala.util.{Failure, Success, Try}
 import spark.jobserver.common.akka.InstrumentedActor
 
 import scala.concurrent.Await
-import akka.pattern.gracefulStop
 import org.joda.time.DateTime
 import org.slf4j.LoggerFactory
-import spark.jobserver.JobManagerActor.{GetContexData, ContexData, SparkContextDead}
-import spark.jobserver.io.{JobDAOActor, ContextInfo, ContextStatus}
+import spark.jobserver.JobManagerActor.{GetContexData, ContexData, SparkContextDead, RestartExistingJobs}
+import spark.jobserver.JobManagerActor.ContextTerminatedException
+import spark.jobserver.io.{JobDAOActor, ContextInfo, ContextStatus, JobStatus, ErrorData}
+import spark.jobserver.util.{InternalServerErrorException, NoCallbackFoundException,
+  ContextJVMInitializationTimeout, ContextForcefulKillTimeout}
+import com.google.common.annotations.VisibleForTesting
 
 object AkkaClusterSupervisorActor {
   val MANAGER_ACTOR_PREFIX = "jobManager-"
+  val ACTOR_NAME = "context-supervisor"
 }
 
 /**
@@ -38,8 +43,8 @@ object AkkaClusterSupervisorActor {
  *
  * See the [[LocalContextSupervisorActor]] for normal config options.
  */
-class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
-    extends InstrumentedActor {
+class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef,
+    cluster: Cluster) extends InstrumentedActor {
 
   import ContextSupervisor._
   import scala.collection.JavaConverters._
@@ -49,66 +54,80 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
   val defaultContextConfig = config.getConfig("spark.context-settings")
   val contextInitTimeout = config.getDuration("spark.context-settings.context-init-timeout",
                                                 TimeUnit.SECONDS)
+  val forkedJVMInitTimeout = SparkJobUtils.getForkedJVMInitTimeout(config)
   val contextDeletionTimeout = SparkJobUtils.getContextDeletionTimeout(config)
   val daoAskTimeout = Timeout(config.getDuration("spark.jobserver.dao-timeout",
                                                 TimeUnit.SECONDS).second)
 
   import context.dispatcher
 
-  //actor name -> (context isadhoc, success callback, failure callback)
-  //TODO: try to pass this state to the jobManager at start instead of having to track
-  //extra state.  What happens if the WebApi process dies before the forked process
-  //starts up?  Then it never gets initialized, and this state disappears.
-  private val contextInitInfos = mutable.HashMap.empty[String,
-                                                      (Config, Boolean, ActorRef => Unit, Throwable => Unit)]
+  protected val contextInitInfos = mutable.HashMap.empty[String,
+    (ActorRef => Unit, Throwable => Unit, Cancellable)]
 
   // actor name -> ResultActor ref
   private val resultActorRefs = mutable.HashMap.empty[String, ActorRef]
   private val jobManagerActorRefs = mutable.HashMap.empty[String, ActorRef]
 
-  private val cluster = Cluster(context.system)
   protected val selfAddress = cluster.selfAddress
+
+  private val FINAL_STATES = Set(ContextStatus.Error, ContextStatus.Finished, ContextStatus.Killed)
 
   // This is for capturing results for ad-hoc jobs. Otherwise when ad-hoc job dies, resultActor also dies,
   // and there is no way to retrieve results.
   val globalResultActor = context.actorOf(Props[JobResultActor], "global-result-actor")
 
-  logger.info("AkkaClusterSupervisor initialized on {}", selfAddress)
-
   def getActorRef(contextInfo: ContextInfo) : Option[ActorRef] = {
-    if (jobManagerActorRefs.exists(_._1 == contextInfo.id)) {
-      Some(jobManagerActorRefs(contextInfo.id))
-    } else if (contextInfo.actorAddress.nonEmpty) {
-      val finiteDuration = FiniteDuration(3, SECONDS)
-      val address = contextInfo.actorAddress.get + "/user/" +
+    contextInfo.actorAddress match {
+      case Some(address) =>
+        val actorPath = contextInfo.actorAddress.get + "/user/" +
           AkkaClusterSupervisorActor.MANAGER_ACTOR_PREFIX + contextInfo.id
-      try {
-        val contextActorRefFuture = context.actorSelection(address).resolveOne(finiteDuration)
-        jobManagerActorRefs(contextInfo.id) = Await.result(contextActorRefFuture, finiteDuration)
-        Some(jobManagerActorRefs(contextInfo.id))
-      } catch {
-        case e: Exception =>
-          logger.error("Failed to resolve reference for context " + contextInfo.name
-              + " with exception " + e.getMessage)
-          None
-      }
-    } else {
-      logger.error("Reference for context " + contextInfo.name + " does not exist")
-      None
+        jobManagerActorRefs.exists(_._1 == actorPath) match {
+          case true => Some(jobManagerActorRefs(actorPath))
+          case false =>
+            val finiteDuration = FiniteDuration(3, SECONDS)
+            try {
+              val contextActorRefFuture = context.actorSelection(actorPath).resolveOne(finiteDuration)
+              jobManagerActorRefs(actorPath) = Await.result(contextActorRefFuture, finiteDuration)
+              Some(jobManagerActorRefs(actorPath))
+            } catch {
+              case e: Exception =>
+                logger.error("Failed to resolve reference for context " + contextInfo.name
+                    + " with exception " + e.getMessage)
+                None
+            }
+          }
+      case None =>
+        logger.error("Reference for context " + contextInfo.name + " does not exist")
+        None
     }
   }
 
   override def preStart(): Unit = {
-    cluster.join(selfAddress)
-    cluster.subscribe(self, initialStateMode = InitialStateAsEvents, classOf[MemberEvent])
+    logger.info("AkkaClusterSupervisor initialized on {}", selfAddress)
   }
 
   override def postStop(): Unit = {
     cluster.unsubscribe(self)
     cluster.leave(selfAddress)
+    logger.warn(s"Unsubscribing and leaving cluster with address ${selfAddress}")
   }
 
   def wrappedReceive: Receive = {
+    case state: CurrentClusterState =>
+      lazy val members = StringBuilder.newBuilder
+      state.members.foreach(m => members.append(m.address.toString).append(" "))
+      logger.info(s"Current Akka cluster has members ${members.toString()}")
+
+      state.leader match {
+        case None => logger.warn("No leader for current Akka cluster!")
+        case Some(address) => logger.info(s"Current Akka leader has address ${address.toString}")
+      }
+
+      state.roleLeaderMap.foreach {
+        case (key, Some(address)) => logger.info(s"Role/Address entry: $key/${address.toString}")
+        case (key, None) => logger.info(s"Role/Address entry: $key/")
+      }
+
     case MemberUp(member) =>
       if (member.hasRole("manager")) {
         val memberActors = RootActorPath(member.address) / "user" / "*"
@@ -120,14 +139,55 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         val actorName = actorRef.path.name
         if (actorName.startsWith("jobManager")) {
           logger.info("Received identify response, attempting to initialize context at {}", memberActors)
-          (for { (contextConfig, isAdHoc, successFunc, failureFunc) <- contextInitInfos.remove(actorName) }
-           yield {
-             initContext(contextConfig, actorName,
-                         actorRef, contextInitTimeout)(isAdHoc, successFunc, failureFunc)
-           }).getOrElse({
-            logger.warn("No initialization or callback found for jobManager actor {}", actorRef.path)
-            actorRef ! PoisonPill
-          })
+
+          val contextId = actorName.replace(AkkaClusterSupervisorActor.MANAGER_ACTOR_PREFIX, "")
+          val contextFromDAO =
+            getDataFromDAO[JobDAOActor.ContextResponse](JobDAOActor.GetContextInfo(contextId))
+          val callbacks = contextInitInfos.remove(actorName)
+          (contextFromDAO, callbacks) match {
+            case (Some(JobDAOActor.ContextResponse(Some(contextInfo))), _)
+                if isContextInFinalState(contextInfo) =>
+              logger.info(s"Context forked JVM (${contextInfo.name}) already errored out. Killing it.")
+              actorRef ! PoisonPill
+            case (Some(JobDAOActor.ContextResponse(Some(contextInfo))),
+                Some((successCallback, failureCallback, timeoutMsgCancelHandler))) =>
+              cancelScheduledMessage(timeoutMsgCancelHandler)
+              initContext(contextInfo, actorName, actorRef, false)(successCallback, failureCallback)
+            case (Some(JobDAOActor.ContextResponse(None)), _) =>
+              logger.error(
+                 s"No such contextId ${contextId} was found in DB. Cannot initialize actor ${actorName}")
+              actorRef ! PoisonPill
+            case (Some(JobDAOActor.ContextResponse(Some(contextInfo))), None) =>
+              isSuperviseModeEnabled(config, ConfigFactory.parseString(contextInfo.config)) match {
+                case isRestartScenario @ true =>
+                  logger.info(
+                     s"Restart request for context (${contextId}) received, probably due to supervise mode")
+                  initContext(contextInfo, actorName, actorRef, isRestartScenario)(
+                     { ref =>
+                       logger.info(s"Successfully reinitialized context (${contextId}) under supervise mode")
+                     },
+                     { ref =>
+                         logger.error(s"Failed to reinitialize context (${contextId}) under supervise mode")
+                     })
+                case false =>
+                  val exception =
+                    NoCallbackFoundException(contextInfo.id, actorRef.path.toSerializationFormat)
+                  logger.error(exception.getMessage, exception)
+                  actorRef ! PoisonPill // Since no watch was added, Terminated will not be fired
+                  daoActor ! JobDAOActor.SaveContextInfo(contextInfo.copy(
+                      state = ContextStatus.Error, endTime = Some(DateTime.now()), error = Some(exception)))
+              }
+            case (None, Some((_, failureCallback, timeoutMsgCancelHandler))) =>
+              cancelScheduledMessage(timeoutMsgCancelHandler)
+              val exception = InternalServerErrorException(contextId)
+              logger.error(exception.getMessage, exception)
+              actorRef ! PoisonPill
+              failureCallback(exception)
+            case (None, None) =>
+              val errorMessage = s"Failed to create context ($contextId) due to internal error"
+              logger.error(errorMessage)
+              actorRef ! PoisonPill
+          }
         }
       }
 
@@ -136,7 +196,8 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
 
     case ListContexts =>
       val resp = getDataFromDAO[JobDAOActor.ContextInfos](
-          JobDAOActor.GetContextInfos(None, Some(ContextStatus.Running)))
+          JobDAOActor.GetContextInfos(None, Some(
+              Seq(ContextStatus.Running, ContextStatus.Restarting, ContextStatus.Stopping))))
       resp match {
         case Some(JobDAOActor.ContextInfos(contextInfos)) => sender ! contextInfos.map(_.name)
         case None => sender ! UnexpectedError
@@ -146,23 +207,24 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       val originator = sender
       val resp = getContextByName(name)
       resp match {
-        case Some(JobDAOActor.ContextResponse(Some(c))) =>
-          val contextActorRef = getActorRef(c)
+        case Some(JobDAOActor.ContextResponse(Some(contextInfo))) =>
+          val contextActorRef = getActorRef(contextInfo)
           contextActorRef match {
             case Some(ref) => val future = (ref ? GetContexData)(30.seconds)
               future.collect {
                 case ContexData(appId, Some(webUi)) =>
-                  originator ! SparkContexData(name, appId, Some(webUi))
+                  originator ! SparkContexData(contextInfo, Some(appId), Some(webUi))
                 case ContexData(appId, None) =>
-                  originator ! SparkContexData(name, appId, None)
+                  originator ! SparkContexData(contextInfo, Some(appId), None)
                 case SparkContextDead =>
-                  logger.info("SparkContext {} is dead", name)
-                  originator ! NoSuchContext
+                  originator ! SparkContexData(contextInfo, None, None)
+              }.recover {
+                case e: Exception => originator ! SparkContexData(contextInfo, None, None)
               }
-            case None => sender ! NoSuchContext
+            case None => originator ! SparkContexData(contextInfo, None, None)
           }
-        case Some(JobDAOActor.ContextResponse(None)) => sender ! NoSuchContext
-        case None => sender ! UnexpectedError
+        case Some(JobDAOActor.ContextResponse(None)) => originator ! NoSuchContext
+        case None => originator ! UnexpectedError
       }
 
     case AddContext(name, contextConfig) =>
@@ -210,25 +272,44 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         case None => sender ! UnexpectedError
       }
 
-    case StopContext(name) =>
+    case StopContext(name, force) =>
       val resp = getContextByName(name)
       resp match {
         case Some(JobDAOActor.ContextResponse(Some(c))) =>
           logger.info("Shutting down context {}", name)
+          val state = if (ContextStatus.getFinalStates() contains c.state) c.state else ContextStatus.Stopping
           val contextInfo = ContextInfo(c.id, c.name, c.config, c.actorAddress, c.startTime,
-            c.endTime, ContextStatus.Stopping, c.error)
+            c.endTime, state, c.error)
           daoActor ! JobDAOActor.SaveContextInfo(contextInfo)
           val contextActorRef = getActorRef(c)
           contextActorRef match {
+            case Some(ref) if force =>
+              val originalSender = sender
+               (ref ? JobManagerActor.StopContextForcefully)(contextDeletionTimeout seconds)
+                  .mapTo[ContextSupervisor.StopForcefullyContextResponse].onComplete {
+                case Success(SparkContextStopped) =>
+                  logger.info("Spark context stopped successfully. Shutting down the driver actor system")
+                  originalSender ! ContextStopped
+                case Success(ContextStopError(e)) =>
+                  logger.error(s"Context stopped forcefully failed with message ${e.getMessage}")
+                  originalSender ! ContextStopError(e)
+                case Failure(t) =>
+                  logger.error(s"Context stopped forcefully failed unexpectedly with message ${t.getMessage}")
+                  originalSender ! ContextStopError(t)
+              }
             case Some(ref) =>
-              val address = AddressFromURIString(c.actorAddress.get)
-              cluster.down(address)
-              try {
-                val stoppedCtx = gracefulStop(ref, contextDeletionTimeout seconds)
-                Await.result(stoppedCtx, contextDeletionTimeout + 1 seconds)
-                sender ! ContextStopped
-              } catch {
-                case err: Exception => sender ! ContextStopError(err)
+              val originalSender = sender
+              (ref ? JobManagerActor.StopContextAndShutdown)(contextDeletionTimeout seconds)
+                  .mapTo[ContextSupervisor.StopContextResponse].onComplete {
+                case Success(SparkContextStopped) =>
+                  logger.info("Spark context stopped successfully. Shutting down the driver actor system")
+                  originalSender ! ContextStopped
+                case Success(ContextStopInProgress) =>
+                  logger.info("Failed to stop context within timeout. Stop is still in progress")
+                  originalSender ! ContextStopInProgress
+                case Failure(t) =>
+                  logger.error(s"Context stopped failed with message ${t.getMessage}")
+                  originalSender ! ContextStopError(t)
               }
             case None => sender ! NoSuchContext
           }
@@ -237,31 +318,92 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
       }
 
     case Terminated(actorRef) =>
-      val name: String = actorRef.path.name
-      logger.info("Actor terminated: {}", name)
-      val contextId = name.split(AkkaClusterSupervisorActor.MANAGER_ACTOR_PREFIX).apply(1)
-      val resp = getDataFromDAO[JobDAOActor.ContextResponse](JobDAOActor.GetContextInfo(contextId))
-      resp match {
-        case Some(JobDAOActor.ContextResponse(Some(c))) =>
-          val state =
-            if (c.state == ContextStatus.Stopping) ContextStatus.Finished else ContextStatus.Killed
-          val contextInfo = ContextInfo(c.id, c.name, c.config, c.actorAddress, c.startTime,
-                Option(DateTime.now()), state, c.error)
+      handleTerminatedEvent(actorRef)
+
+    case ForkedJVMInitTimeout(contextActorName, contextInfo: ContextInfo) => {
+      contextInitInfos.get(contextActorName) match {
+        case Some((successFunc, failureFunc, _)) =>
+          logger.warn(s"Context forked JVM failed to initialize for actor $contextActorName")
           daoActor ! JobDAOActor.SaveContextInfo(contextInfo)
-          daoActor ! JobDAOActor.CleanContextJobInfos(c.name, DateTime.now())
-        case Some(JobDAOActor.ContextResponse(None)) =>
-          logger.error("No context for deletion is found in the DB")
+          failureFunc(ContextJVMInitializationTimeout())
         case None =>
-          logger.error("Error occurred after Terminated message was recieved")
       }
-      cluster.down(actorRef.path.address)
-      jobManagerActorRefs.remove(contextId)
+    }
+
+    case RegainWatchOnExistingContexts(actorRefs) =>
+      actorRefs.map { ref =>
+        logger.info(s"Regaining watch on existing context with address ${ref.path.address.toString}")
+        context.watch(ref)
+      }
+  }
+
+  protected def handleTerminatedEvent(actorRef: ActorRef) {
+    val name: String = actorRef.path.name
+    logger.info("Actor terminated: {}", name)
+    val contextId = name.split(AkkaClusterSupervisorActor.MANAGER_ACTOR_PREFIX).apply(1)
+    val resp = getDataFromDAO[JobDAOActor.ContextResponse](JobDAOActor.GetContextInfo(contextId))
+    resp match {
+      case Some(JobDAOActor.ContextResponse(Some(c))) =>
+        ContextStatus.getFinalStates().contains(c.state) match {
+          case true => logger.warn(
+            s"Terminated received for context (${c.name}) which is already in final state ${c.state}")
+          case false =>
+            val state =
+              if (c.state == ContextStatus.Stopping) ContextStatus.Finished else ContextStatus.Killed
+            (isSuperviseModeEnabled(config, ConfigFactory.parseString(c.config)), state) match {
+              case (true, ContextStatus.Killed) =>
+                setStateForContextAndJobs(c, ContextStatus.Restarting)
+              case _ =>
+                val contextInfo = c.copy(endTime = Option(DateTime.now()), state = state)
+                daoActor ! JobDAOActor.SaveContextInfo(contextInfo)
+                daoActor ! JobDAOActor.CleanContextJobInfos(c.id, DateTime.now())
+            }
+        }
+      case Some(JobDAOActor.ContextResponse(None)) =>
+        logger.error(s"No context (contextId: ${contextId}) for deletion is found in the DB")
+      case None =>
+        logger.error(s"Error occurred after Terminated message was recieved for (contextId: ${contextId})")
+    }
+    leaveCluster(actorRef)
+    jobManagerActorRefs.remove(actorRef.path.toString())
+  }
+
+  protected def leaveCluster(actorRef: ActorRef): Unit = {
+    cluster.down(actorRef.path.address)
+  }
+
+  private def setStateForContextAndJobs(contextInfo: ContextInfo, state: String) {
+    val newContextInfo = contextInfo.copy(endTime = Option(DateTime.now()),
+        state = state)
+    logger.info(s"Updating the status to ${state} for context ${contextInfo.id} and jobs within")
+    daoActor ! JobDAOActor.SaveContextInfo(newContextInfo)
+    setStateForRunningAndRestartingJobs(contextInfo, state)
+  }
+
+  private def setStateForRunningAndRestartingJobs(contextInfo: ContextInfo, state: String) {
+    (daoActor ? JobDAOActor.GetJobInfosByContextId(
+        contextInfo.id, Some(Seq(JobStatus.Running, JobStatus.Restarting))))(daoAskTimeout).onComplete {
+      case Success(JobDAOActor.JobInfos(Seq())) =>
+        logger.info(s"No jobs found for context ${contextInfo.name}, not updating status")
+      case Success(JobDAOActor.JobInfos(jobInfos)) =>
+        val error = ErrorData(JobManagerActor.ContextTerminatedException(contextInfo.id))
+        jobInfos.foreach { jobInfo =>
+          logger.info(s"Found job ${jobInfo.jobId} for context. Setting state to ${state}.")
+          daoActor ! JobDAOActor.SaveJobInfo(jobInfo.copy(state = state,
+              endTime = Some(DateTime.now()), error = Some(error)))
+        }
+      case Failure(e: Exception) =>
+        logger.error(s"Exception occured while fetching jobs for context (${contextInfo.id})", e)
+      case unexpectedMsg @ _ =>
+        logger.error(s"$unexpectedMsg message received while fetching jobs for context (${contextInfo.id})")
+    }
   }
 
   private def initContext(contextConfig: Config,
                           actorName: String,
                           ref: ActorRef,
-                          timeoutSecs: Long = 1)
+                          timeoutSecs: Long = 1,
+                          isRestartScenario: Boolean)
                          (isAdHoc: Boolean,
                           successFunc: ActorRef => Unit,
                           failureFunc: Throwable => Unit): Unit = {
@@ -285,9 +427,14 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         logger.info("SparkContext {} joined", ctxName)
         resultActorRefs(ctxName) = resActor
         context.watch(ref)
-        initContextHelp(actorName, Some(ref.path.address.toString), ContextStatus.Running, None) match {
-          case None => successFunc(ref)
-          case Some(e) => ref ! PoisonPill
+        (initContextHelp(actorName, Some(ref.path.address.toString), ContextStatus.Running, None),
+            isRestartScenario) match {
+          case (None, false) => successFunc(ref)
+          case (None, true) =>
+            logger.info("Context initialized, trying to restart existing jobs.")
+            ref ! RestartExistingJobs
+          case (Some(e), _) =>
+            ref ! PoisonPill
             failureFunc(e)
         }
       case _ => logger.info("Failed for unknown reason.")
@@ -307,18 +454,18 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     val resp = getDataFromDAO[JobDAOActor.ContextResponse](JobDAOActor.GetContextInfo(managerActorName))
     resp match {
       case Some(JobDAOActor.ContextResponse(Some(context))) =>
-                    val endTime = error match {
-            case None => context.endTime
-            case _ => Some(DateTime.now())
+          val contextInfo = ContextInfo(context.id,
+                                            context.name,
+                                            context.config,
+                                            clusterAddress,
+                                            context.startTime,
+                                            context.endTime,
+                                            state,
+                                            error)
+          error match {
+            case None => daoActor ! JobDAOActor.SaveContextInfo(contextInfo)
+            case _ => setStateForContextAndJobs(contextInfo, state)
           }
-          daoActor ! JobDAOActor.SaveContextInfo(ContextInfo(context.id,
-                                                  context.name,
-                                                  context.config,
-                                                  clusterAddress,
-                                                  context.startTime,
-                                                  endTime,
-                                                  state,
-                                                  error))
           None
       case Some(JobDAOActor.ContextResponse(None)) =>
           val e = new Throwable("Did not find context in the DB")
@@ -351,8 +498,23 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
         failureFunc(e)
         daoActor ! JobDAOActor.SaveContextInfo(contextInfo(ContextStatus.Error, Some(e)))
       case (true, _) =>
-        contextInitInfos(contextActorName) = (mergedContextConfig, isAdHoc, successFunc, failureFunc)
-        daoActor ! JobDAOActor.SaveContextInfo(contextInfo(ContextStatus.Started, None))
+        val timeoutMsg = ForkedJVMInitTimeout(contextActorName,
+             contextInfo(ContextStatus.Error, Some(ContextJVMInitializationTimeout())))
+        // Scheduler can throw IllegalStateException
+        Try(context.system.scheduler.scheduleOnce(forkedJVMInitTimeout.seconds, self, timeoutMsg)) match {
+          case Success(timeoutMsgCancelHandler) =>
+            logger.info("Scheduling a time out message for forked JVM")
+            daoActor ! JobDAOActor.SaveContextInfo(contextInfo(ContextStatus.Started, None))
+            contextInitInfos(contextActorName) = (successFunc, failureFunc, timeoutMsgCancelHandler)
+          case Failure(e) =>
+            logger.error("Failed to schedule a time out message for forked JVM", e)
+            daoActor ! JobDAOActor.SaveContextInfo(contextInfo(ContextStatus.Error, Some(e)))
+            val unusedCancellable = new Cancellable {
+              def cancel(): Boolean = { return false }
+              def isCancelled: Boolean = { return false }
+            }
+            contextInitInfos(contextActorName) = (successFunc, failureFunc, unusedCancellable)
+        }
     }
   }
 
@@ -392,7 +554,7 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     }
   }
 
-  private def getDataFromDAO[T: ClassTag](msg: JobDAOActor.JobDAORequest): Option[T] = {
+  protected def getDataFromDAO[T: ClassTag](msg: JobDAOActor.JobDAORequest): Option[T] = {
     Try(Some(Await.result((daoActor ? msg)(daoAskTimeout).mapTo[T], daoAskTimeout.duration))).getOrElse(None)
   }
 
@@ -405,8 +567,34 @@ class AkkaClusterSupervisorActor(daoActor: ActorRef, dataManagerActor: ActorRef)
     resp match {
       case None => (false, None)
       case Some(JobDAOActor.ContextResponse(Some(c)))
-        if c.state == ContextStatus.Running || c.state == ContextStatus.Started => (true, Some(c))
+        if ContextStatus.getNonFinalStates().contains(c.state) => (true, Some(c))
       case Some(_) => (true, None)
     }
+  }
+
+  private def isSuperviseModeEnabled(config: Config, contextConfig: Config): Boolean = {
+    val defaultSuperviseMode = config.getBoolean(ManagerLauncher.SJS_SUPERVISE_MODE_KEY)
+    val contextSuperviseMode = Try(
+        Some(contextConfig.getBoolean(ManagerLauncher.CONTEXT_SUPERVISE_MODE_KEY))).getOrElse(None)
+    ManagerLauncher.shouldSuperviseModeBeEnabled(defaultSuperviseMode, contextSuperviseMode)
+  }
+
+  private def initContext(contextInfo: ContextInfo, actorName: String, actorRef: ActorRef,
+      isRestartScenario: Boolean)
+      (successCallback: ActorRef => Unit, failureCallback: Throwable => Unit): Unit = {
+    val contextConfig = ConfigFactory.parseString(contextInfo.config)
+    val isAdhoc = contextConfig.getBoolean("is-adhoc")
+    initContext(contextConfig, actorName,
+           actorRef, contextInitTimeout, isRestartScenario)(isAdhoc, successCallback, failureCallback)
+  }
+
+  private def cancelScheduledMessage(cancelHandler: Cancellable) {
+    cancelHandler.cancel()
+    logger.info(s"Scheduled message has been cancelled: ${cancelHandler.isCancelled.toString()}")
+  }
+
+  @VisibleForTesting
+  protected def isContextInFinalState(contextInfo: ContextInfo): Boolean = {
+    ContextStatus.getFinalStates().contains(contextInfo.state)
   }
 }

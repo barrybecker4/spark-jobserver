@@ -75,3 +75,7 @@ Call the [DataFileCache](../job-server-api/src/main/scala/spark/jobserver/api/Sp
 The job server transfers the files via akka to the host running your driver and caches them there.
 
 Note: Files uploaded via the JAR or binary API are stored and transfered via the Job DB.
+
+## Configuring Job Server for supervised cluster mode
+
+* See the [supervise-mode document](https://github.com/spark-jobserver/spark-jobserver/blob/master/doc/supervise-mode.md)

@@ -4,7 +4,7 @@ import com.typesafe.config.ConfigFactory
 import spark.jobserver.io.BinaryType
 import spray.http.{MediaTypes, HttpHeaders, HttpHeader}
 import spray.http.StatusCodes._
-import spark.jobserver.io.JobStatus
+import spark.jobserver.io.{JobStatus, ContextStatus}
 import spark.jobserver.util.SparkJobUtils
 
 // Tests web response codes and formatting
@@ -18,6 +18,7 @@ class WebApiMainRoutesSpec extends WebApiSpec {
   val getJobStatusInfoMap = {
     Map(
       "jobId" -> "foo-1",
+      "contextId" -> "cid",
       "startTime" -> "2013-05-29T00:00:00.000Z",
       "classPath" -> "com.abc.meme",
       "context"  -> "context",
@@ -34,9 +35,11 @@ class WebApiMainRoutesSpec extends WebApiSpec {
       }
     }
 
-    it("should respond with OK if jar uploaded successfully") {
+    it("should respond with OK and meaningful message if jar uploaded successfully") {
       Post("/jars/foobar", Array[Byte](0, 1, 2)) ~> sealRoute(routes) ~> check {
         status should be (OK)
+        val result = responseAs[Map[String, String]]
+        result(ResultKey) should equal("Jar uploaded")
       }
     }
 
@@ -118,12 +121,14 @@ class WebApiMainRoutesSpec extends WebApiSpec {
         status should be (OK)
         responseAs[Seq[Map[String, String]]] should be (Seq(
           Map("jobId" -> "foo-1",
+              "contextId" -> "cid",
               "startTime" -> "2013-05-29T00:00:00.000Z",
               "classPath" -> "com.abc.meme",
               "context"  -> "context",
               "duration" -> "Job not done yet",
               StatusKey -> JobStatus.Running),
           Map("jobId" -> "foo-1",
+              "contextId" -> "cid",
               "startTime" -> "2013-05-29T00:00:00.000Z",
               "classPath" -> "com.abc.meme",
               "context"  -> "context",
@@ -137,6 +142,7 @@ class WebApiMainRoutesSpec extends WebApiSpec {
         status should be (OK)
         responseAs[Seq[Map[String, String]]] should be (Seq(
           Map("jobId" -> "foo-1",
+            "contextId" -> "cid",
             "startTime" -> "2013-05-29T00:00:00.000Z",
             "classPath" -> "com.abc.meme",
             "context"  -> "context",
@@ -170,6 +176,7 @@ class WebApiMainRoutesSpec extends WebApiSpec {
         status should be (OK)
         responseAs[Seq[Map[String, String]]] should be (Seq(
           Map("jobId" -> "foo-1",
+            "contextId" -> "cid",
             "startTime" -> "2013-05-29T00:00:00.000Z",
             "classPath" -> "com.abc.meme",
             "context"  -> "context",
@@ -221,12 +228,23 @@ class WebApiMainRoutesSpec extends WebApiSpec {
         status should be (Accepted)
         responseAs[Map[String, String]] should be (Map(
           "jobId" -> "foo",
+          "contextId" -> "cid",
           "startTime" -> "2013-05-29T00:00:00.000Z",
           "classPath" -> "com.abc.meme",
           "context"  -> "context",
           "duration" -> "Job not done yet",
           StatusKey -> JobStatus.Started)
         )
+      }
+    }
+
+    it("async route should return 409 if job starts was triggered while the context was in stopping state") {
+      Post("/jobs?appName=context-already-stopped&classPath=com.abc.meme&context=one",
+          "") ~> sealRoute(routes) ~> check {
+        status should be (Conflict)
+        val result = responseAs[Map[String, String]]
+        result(StatusKey) should equal(JobStatus.Error)
+        result(ResultKey) should be("Context stop in progress")
       }
     }
 
@@ -282,6 +300,7 @@ class WebApiMainRoutesSpec extends WebApiSpec {
         status should be (Accepted)
         responseAs[Map[String, String]] should be (Map(
           "jobId" -> "foo",
+          "contextId" -> "cid",
           "startTime" -> "2013-05-29T00:00:00.000Z",
           "classPath" -> "com.abc.meme",
           "context"  -> "context",
@@ -296,6 +315,7 @@ class WebApiMainRoutesSpec extends WebApiSpec {
         status should be (OK)
         responseAs[Map[String, String]] should be (Map(
           "jobId" -> "foo-1",
+          "contextId" -> "cid",
           "startTime" -> "2013-05-29T00:00:00.000Z",
           "classPath" -> "com.abc.meme",
           "context"  -> "context",
@@ -310,6 +330,7 @@ class WebApiMainRoutesSpec extends WebApiSpec {
         status should be (OK)
         responseAs[Map[String, String]] should be (Map(
           "jobId" -> "foo-1",
+          "contextId" -> "cid",
           "startTime" -> "2013-05-29T00:00:00.000Z",
           "classPath" -> "com.abc.meme",
           "context"  -> "context",
@@ -320,9 +341,11 @@ class WebApiMainRoutesSpec extends WebApiSpec {
       }
     }
 
-    it("should respond with 404 Not Found from /jobs/<id> route if status of jobId does not exist") {
+    it("should respond with 404 Not Found and meaningful message if status of jobId does not exist") {
       Get("/jobs/_no_status") ~> sealRoute(routes) ~> check {
         status should be (NotFound)
+        val result = responseAs[Map[String, String]]
+        result(ResultKey) should startWith ("No such job ID ")
       }
     }
 
@@ -454,9 +477,54 @@ class WebApiMainRoutesSpec extends WebApiSpec {
       }
     }
 
-    it("should respond with 404 Not Found if stopping unknown context") {
-      Delete("/contexts/none", "") ~> sealRoute(routes) ~> check {
-        status should be (NotFound)
+    it("should return context information with context UI url (local mode)") {
+      Get("/contexts/context1") ~> sealRoute(routes) ~> check {
+        status should be (OK)
+        responseAs[Map[String, String]] should be (Map(
+            "name" -> "context1",
+            "applicationId" -> "local-1337",
+            "url" -> "http://spark:4040"))
+      }
+    }
+
+    it("should return context information without context UI url (local mode)") {
+      Get("/contexts/context2") ~> sealRoute(routes) ~> check {
+        status should be (OK)
+        responseAs[Map[String, String]] should be (Map(
+            "name" -> "context2",
+            "applicationId" -> "local-1337"))
+      }
+    }
+
+    it("should return valid contextInfo for running context (cluster/client mode)") {
+      Get("/contexts/contextWithInfo") ~> sealRoute(routes) ~> check {
+        status should be (OK)
+        responseAs[Map[String, String]] should be (Map("name" -> "contextWithInfo",
+                                                       "applicationId" -> "local-1337",
+                                                       "url" -> "http://spark:4040",
+                                                       "state" -> ContextStatus.Running,
+                                                       "id" -> "contextId",
+                                                       "endTime" -> "Empty",
+                                                       "startTime" -> "2013-05-29T00:00:00.000Z"))
+      }
+    }
+
+    it("should return valid contextInfo for finished context (cluster/client mode)") {
+      Get("/contexts/finishedContextWithInfo") ~> sealRoute(routes) ~> check {
+        status should be (OK)
+        responseAs[Map[String, String]] should be (Map("name" -> "finishedContextWithInfo",
+                                                       "state" -> ContextStatus.Finished,
+                                                       "id" -> "contextId",
+                                                       "endTime" -> "2013-05-29T00:05:00.000Z",
+                                                       "startTime" -> "2013-05-29T00:00:00.000Z"))
+      }
+    }
+
+    it("should respond with InternalServerError if unexpected error occurs at getting context") {
+      Get("/contexts/unexp-err", "") ~> sealRoute(routes) ~> check {
+        status should be (InternalServerError)
+        val result = responseAs[Map[String, Any]]
+        result(ResultKey) should equal("UNEXPECTED ERROR OCCURRED")
       }
     }
 
@@ -466,10 +534,44 @@ class WebApiMainRoutesSpec extends WebApiSpec {
         status should be(OK)
       }
     }
-    
+
     it("should return OK if stopping known context") {
       Delete("/contexts/one", "") ~> sealRoute(routes) ~> check {
         status should be (OK)
+        val result = responseAs[Map[String, String]]
+        result(ResultKey) should equal("Context stopped")
+      }
+    }
+
+    it("should respond with InternalServerError if timeout occurs on a delete request") {
+      Delete("/contexts/timeout-ctx", "") ~> sealRoute(routes) ~> check {
+        status should be (InternalServerError)
+        val result = responseAs[Map[String, Any]]
+        result(StatusKey) should equal("CONTEXT DELETE ERROR")
+      }
+    }
+
+    it("should respond with 404 Not Found if stopping unknown context") {
+      Delete("/contexts/none", "") ~> sealRoute(routes) ~> check {
+        status should be (NotFound)
+        val result = responseAs[Map[String, String]]
+        result(ResultKey) should equal("context none not found")
+      }
+    }
+
+    it("should respond with InternalServerError if unexpected error occurs at deleting context") {
+      Delete("/contexts/unexp-err", "") ~> sealRoute(routes) ~> check {
+        status should be (InternalServerError)
+        val result = responseAs[Map[String, Any]]
+        result(ResultKey) should equal("UNEXPECTED ERROR OCCURRED")
+      }
+    }
+
+    it("should respond with 202 and location header if failed to stop context in time") {
+      Delete("/contexts/ctx-stop-in-progress", "") ~> sealRoute(routes) ~> check {
+        status should be (Accepted)
+        header("Location").get.value should be("http://example.com/contexts/ctx-stop-in-progress")
+        response.entity.asString should be("")
       }
     }
 
@@ -478,15 +580,20 @@ class WebApiMainRoutesSpec extends WebApiSpec {
         status should be (BadRequest)
         val result = responseAs[Map[String, String]]
         result(StatusKey) should equal(JobStatus.Error)
+        result(ResultKey) should equal("context one exists")
       }
     }
 
     it("should return OK if starting a new context") {
       Post("/contexts/meme?num-cpu-cores=3") ~> sealRoute(routes) ~> check {
         status should be (OK)
+        val result = responseAs[Map[String, String]]
+        result(ResultKey) should equal("Context initialized")
       }
       Post("/contexts/meme?num-cpu-cores=3&coarse-mesos-mode=true") ~> sealRoute(routes) ~> check {
         status should be (OK)
+        val result = responseAs[Map[String, String]]
+        result(ResultKey) should equal("Context initialized")
       }
     }
 
@@ -502,19 +609,19 @@ class WebApiMainRoutesSpec extends WebApiSpec {
       }
     }
 
-    it("should return context information if context/id is called (with context UI url)") {
-      Get("/contexts/context1") ~> sealRoute(routes) ~> check {
-        status should be (OK)
-        responseAs[Map[String, String]] should be (Map(
-            "context" -> "context1",
-            "applicationId" -> "local-1337",
-            "url" -> "http://spark:4040"))
+    it("should respond with InternalServerError if initialization error occurs") {
+      Post("/contexts/initError-ctx", "") ~> sealRoute(routes) ~> check {
+        status should be (InternalServerError)
+        val result = responseAs[Map[String, Any]]
+        result(StatusKey) should equal("CONTEXT INIT ERROR")
       }
     }
-    it("should return context information if context/id is called (without context UI url)") {
-      Get("/contexts/context2") ~> sealRoute(routes) ~> check {
-        status should be (OK)
-        responseAs[Map[String, String]] should be (Map("context" -> "context2", "applicationId" -> "local-1337"))
+
+    it("should respond with InternalServerError if unexpected error occurs at adding context") {
+      Post("/contexts/unexp-err", "") ~> sealRoute(routes) ~> check {
+        status should be (InternalServerError)
+        val result = responseAs[Map[String, Any]]
+        result(ResultKey) should equal("UNEXPECTED ERROR OCCURRED")
       }
     }
   }

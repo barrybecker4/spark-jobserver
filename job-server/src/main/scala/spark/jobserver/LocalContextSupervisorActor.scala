@@ -16,9 +16,12 @@ import spark.jobserver.common.akka.InstrumentedActor
 import akka.pattern.gracefulStop
 import org.joda.time.DateTime
 import spark.jobserver.io.JobDAOActor.CleanContextJobInfos
+import spark.jobserver.io.ContextInfo
 
 /** Messages common to all ContextSupervisors */
 object ContextSupervisor {
+  sealed trait StopContextResponse
+  sealed trait StopForcefullyContextResponse
   // Messages/actions
   case object AddContextsFromConfig // Start up initial contexts
   case object ListContexts
@@ -26,17 +29,22 @@ object ContextSupervisor {
   case class StartAdHocContext(classPath: String, contextConfig: Config)
   case class GetContext(name: String) // returns JobManager, JobResultActor
   case class GetResultActor(name: String)  // returns JobResultActor
-  case class StopContext(name: String)
+  case class StopContext(name: String, force: Boolean = false)
   case class GetSparkContexData(name: String)
+  case class RestartOfTerminatedJobsFailed(contextId: String)
+  case class ForkedJVMInitTimeout(contextActorName: String, contextInfo: ContextInfo)
+  case class RegainWatchOnExistingContexts(actorRefs: Seq[ActorRef])
+  case object SparkContextStopped extends StopContextResponse with StopForcefullyContextResponse
 
   // Errors/Responses
   case object ContextInitialized
   case class ContextInitError(t: Throwable)
-  case class ContextStopError(t: Throwable)
+  case class ContextStopError(t: Throwable) extends StopForcefullyContextResponse
+  case object ContextStopInProgress extends StopContextResponse
   case object ContextAlreadyExists
   case object NoSuchContext
   case object ContextStopped
-  case class SparkContexData(name: String, appId: String, url: Option[String])
+  case class SparkContexData[T](context: T, appId: Option[String], url: Option[String])
   case object UnexpectedError
 }
 
@@ -104,8 +112,8 @@ class LocalContextSupervisorActor(dao: ActorRef, dataManagerActor: ActorRef) ext
           val originator = sender
           future.collect {
             case ContexData(appId, Some(webUi)) =>
-              originator ! SparkContexData(name, appId, Some(webUi))
-            case ContexData(appId, None) => originator ! SparkContexData(name, appId, None)
+              originator ! SparkContexData(name, Some(appId), Some(webUi))
+            case ContexData(appId, None) => originator ! SparkContexData(name, Some(appId), None)
             case SparkContextDead =>
               logger.info("SparkContext {} is dead", name)
               originator ! NoSuchContext
@@ -166,7 +174,7 @@ class LocalContextSupervisorActor(dao: ActorRef, dataManagerActor: ActorRef) ext
         sender ! NoSuchContext
       }
 
-    case StopContext(name) =>
+    case StopContext(name, force) =>
       if (contexts contains name) {
         logger.info("Shutting down context {}", name)
         try {

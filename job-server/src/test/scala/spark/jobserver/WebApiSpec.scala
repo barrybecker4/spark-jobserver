@@ -60,19 +60,35 @@ with ScalatestRouteTest with HttpService with ScalaFutures with SprayJsonSupport
 
   val dt = DateTime.parse("2013-05-29T00Z")
   val baseJobInfo =
-    JobInfo("foo-1", "context", BinaryInfo("demo", BinaryType.Jar, dt), "com.abc.meme", dt, None, None)
-  val finishedJobInfo = baseJobInfo.copy(endTime = Some(dt.plusMinutes(5)))
-  val errorJobInfo = finishedJobInfo.copy(error =  Some(ErrorData(new Throwable("test-error"))))
-  val killedJobInfo = finishedJobInfo.copy(error =  Some(ErrorData(JobKilledException(finishedJobInfo.jobId))))
+    JobInfo("foo-1", "cid", "context", BinaryInfo("demo", BinaryType.Jar, dt), "com.abc.meme",
+        JobStatus.Running, dt, None, None)
+  val finishedJobInfo = baseJobInfo.copy(endTime = Some(dt.plusMinutes(5)),state = JobStatus.Finished)
+  val errorJobInfo = finishedJobInfo.copy(
+      error =  Some(ErrorData(new Throwable("test-error"))), state = JobStatus.Error)
+  val killedJobInfo = finishedJobInfo.copy(
+      error =  Some(ErrorData(JobKilledException(finishedJobInfo.jobId))), state = JobStatus.Killed)
   val JobId = "jobId"
   val StatusKey = "status"
   val ResultKey = "result"
+
+  val contextInfo = ContextInfo("contextId", "contextWithInfo", "config", Some("address"), dt, None,
+      ContextStatus.Running, None)
+  val finishedContextInfo = contextInfo.copy(name = "finishedContextWithInfo",
+      endTime = Some(dt.plusMinutes(5)), state = ContextStatus.Finished)
+
   class DummyActor extends Actor {
 
     import CommonMessages._
     import ContextSupervisor._
     import JobInfoActor._
     import JobManagerActor._
+
+    def getStateBasedOnEvents(events: Set[Class[_]]): String = {
+       events.find(_ == classOf[JobStarted]) match {
+          case Some(_) => JobStatus.Started
+          case _ => JobStatus.Running
+       }
+    }
 
     def receive: PartialFunction[Any, Unit] = {
       case GetJobStatus("_mapseq") =>
@@ -121,8 +137,6 @@ with ScalatestRouteTest with HttpService with ScalaFutures with SprayJsonSupport
         }
       }
 
-
-
       case ListBinaries(Some(BinaryType.Jar)) =>
         sender ! Map("demo1" -> (BinaryType.Jar, dt), "demo2" -> (BinaryType.Jar, dt.plusHours(1)))
 
@@ -149,10 +163,11 @@ with ScalatestRouteTest with HttpService with ScalaFutures with SprayJsonSupport
       case DataManagerActor.DeleteData("errorfileToRemove") => sender ! DataManagerActor.Error
 
       case ListContexts =>  sender ! Seq("context1", "context2")
-      case StopContext("none") => sender ! NoSuchContext
-      case StopContext("timeout-ctx") => sender ! ContextStopError(new Throwable)
-      case StopContext("unexp-err") => sender ! UnexpectedError
-      case StopContext(_)      => sender ! ContextStopped
+      case StopContext("none", _) => sender ! NoSuchContext
+      case StopContext("timeout-ctx", _) => sender ! ContextStopError(new Throwable("Some Throwable"))
+      case StopContext("unexp-err", _) => sender ! UnexpectedError
+      case StopContext("ctx-stop-in-progress", _) => sender ! ContextStopInProgress
+      case StopContext(_, _)      => sender ! ContextStopped
       case AddContext("one", _) => sender ! ContextAlreadyExists
       case AddContext("custom-ctx", c) =>
         // see WebApiMainRoutesSpec => "context routes" =>
@@ -161,7 +176,7 @@ with ScalatestRouteTest with HttpService with ScalaFutures with SprayJsonSupport
         c.getInt("num-cpu-cores") should be(2)
         c.getInt("override_me") should be(3)
         sender ! ContextInitialized
-      case AddContext("initError-ctx", _) => sender ! ContextInitError(new Throwable)
+      case AddContext("initError-ctx", _) => sender ! ContextInitError(new Throwable("Some Throwable"))
       case AddContext("unexp-err", _) => sender ! UnexpectedError
       case AddContext(_, _)     => sender ! ContextInitialized
 
@@ -171,30 +186,31 @@ with ScalatestRouteTest with HttpService with ScalaFutures with SprayJsonSupport
       case StartAdHocContext(_, _) => sender ! (self)
 
       // These routes are part of JobManagerActor
-      case StartJob("no-app", _, _, _)   =>  sender ! NoSuchApplication
-      case StartJob(_, "no-class", _, _) =>  sender ! NoSuchClass
-      case StartJob("wrong-type", _, _, _) => sender ! WrongJobType
-      case StartJob("err", _, config, _) =>  sender ! JobErroredOut("foo", dt,
+      case StartJob("no-app", _, _, _, _)   =>  sender ! NoSuchApplication
+      case StartJob(_, "no-class", _, _, _) =>  sender ! NoSuchClass
+      case StartJob("wrong-type", _, _, _, _) => sender ! WrongJobType
+      case StartJob("err", _, config, _, _) =>  sender ! JobErroredOut("foo", dt,
                                                         new RuntimeException("oops",
                                                           new IllegalArgumentException("foo")))
-      case StartJob("foo", _, config, events)     =>
+      case StartJob("foo", _, config, events, _)     =>
         statusActor ! Subscribe("foo", sender, events)
-        val jobInfo = JobInfo("foo", "context", null, "com.abc.meme", dt, None, None)
+
+        val jobInfo = JobInfo("foo", "cid", "context", null, "com.abc.meme", getStateBasedOnEvents(events), dt, None, None)
         statusActor ! JobStatusActor.JobInit(jobInfo)
         statusActor ! JobStarted(jobInfo.jobId, jobInfo)
         val map = config.entrySet().asScala.map { entry => entry.getKey -> entry.getValue.unwrapped }.toMap
         if (events.contains(classOf[JobResult])) sender ! JobResult("foo", map)
         statusActor ! Unsubscribe("foo", sender)
 
-      case StartJob("foo.stream", _, config, events)     =>
+      case StartJob("foo.stream", _, config, events, _)     =>
         statusActor ! Subscribe("foo.stream", sender, events)
-        val jobInfo = JobInfo("foo.stream", "context", null, "", dt, None, None)
+        val jobInfo = JobInfo("foo.stream", "cid", "context", null, "", getStateBasedOnEvents(events), dt, None, None)
         statusActor ! JobStatusActor.JobInit(jobInfo)
         statusActor ! JobStarted(jobInfo.jobId, jobInfo)
         val result = "\"1, 2, 3, 4, 5, 6\"".getBytes().toStream
         if (events.contains(classOf[JobResult])) sender ! JobResult("foo.stream", result)
         statusActor ! Unsubscribe("foo.stream", sender)
-
+      case StartJob("context-already-stopped", _, _, _, _) =>  sender ! ContextStopInProgress
 
       case GetJobConfig("badjobid") => sender ! NoSuchJobId
       case GetJobConfig(_)          => sender ! config
@@ -202,22 +218,16 @@ with ScalatestRouteTest with HttpService with ScalaFutures with SprayJsonSupport
       case StoreJobConfig(_, _) => sender ! JobConfigStored
       case KillJob(jobId) => sender ! JobKilled(jobId, DateTime.now())
 
-      case GetSparkContexData("context1") => sender ! SparkContexData("context1", "local-1337", Some("http://spark:4040"))
-      case GetSparkContexData("context2") => sender ! SparkContexData("context2", "local-1337", None)
+      case GetSparkContexData("context1") => sender ! SparkContexData("context1", Some("local-1337"), Some("http://spark:4040"))
+      case GetSparkContexData("context2") => sender ! SparkContexData("context2", Some("local-1337"), None)
       case GetSparkContexData("unexp-err") => sender ! UnexpectedError
-    }
-  }
 
-  private def unexpectedErrorHelpFunction(curlCommand: HttpRequest) {
-    val p = sendReceive ~> unmarshal[JobServerResponse]
-      val valid:Future[JobServerResponse] = p(curlCommand)
-      Await.ready(valid, Duration.create(1, TimeUnit.SECONDS)).value.get match {
-        case Success(_) => fail("Should return an exception")
-        case Failure(r: UnsuccessfulResponseException) =>
-          r.response.status.intValue shouldBe 500
-          r.response.status.isFailure shouldBe true
-        case Failure(_) => fail("Should return an UnsuccessfulResponseException")
-      }
+      // On a GetSparkContexData LocalContextSupervisorActor returns only name of the context, api and url,
+      // AkkaClusterSupervisorActor returns whole contextInfo instead.
+      // Adding extra cases to test both
+      case GetSparkContexData("contextWithInfo") => sender ! SparkContexData(contextInfo, Some("local-1337"), Some("http://spark:4040"))
+      case GetSparkContexData("finishedContextWithInfo") => sender ! SparkContexData(finishedContextInfo, None, None)
+    }
   }
 
   implicit override val patienceConfig =
@@ -235,60 +245,6 @@ with ScalatestRouteTest with HttpService with ScalaFutures with SprayJsonSupport
 
     val jsonContentType = HttpHeaders.`Content-Type`(ContentType(MediaTypes.`application/json`))
 
-    it ("Should return valid JSON when a jar is uploaded successfully") {
-      val p = sendReceive ~> unmarshal[JobServerResponse]
-      val valid:Future[JobServerResponse] = p(Post("http://127.0.0.1:9999/jars/test-app","valid"))
-      whenReady(valid) { r=>
-        r.isSuccess shouldBe true
-        r.status shouldBe "SUCCESS"
-        r.result shouldBe "Jar uploaded"
-      }
-    }
-
-    it ("Should return valid JSON when creating a context") {
-      val p = sendReceive ~> unmarshal[JobServerResponse]
-      val valid:Future[JobServerResponse] = p(Post("http://127.0.0.1:9999/contexts/test-ctx","{}"))
-      whenReady(valid) { r=>
-        r.isSuccess shouldBe true
-        r.status shouldBe "SUCCESS"
-        r.result shouldBe "Context initialized"
-      }
-    }
-
-    it ("Should return an error when actor returns ContextInitError") {
-      val p = sendReceive ~> unmarshal[JobServerResponse]
-      val valid:Future[JobServerResponse] = p(Post("http://127.0.0.1:9999/contexts/initError-ctx"))
-      Await.ready(valid, Duration.create(1, TimeUnit.SECONDS)).value.get match {
-        case Success(_) => fail("Should return an exception")
-        case Failure(r: UnsuccessfulResponseException) =>
-          r.response.status.intValue shouldBe 500
-          r.response.status.isFailure shouldBe true
-        case Failure(_) => fail("Should return an UnsuccessfulResponseException")
-      }
-    }
-
-    it ("Should return valid JSON when stopping a context") {
-      val p = sendReceive ~> unmarshal[JobServerResponse]
-      val valid:Future[JobServerResponse] = p(Delete("http://127.0.0.1:9999/contexts/test-ctx"))
-      whenReady(valid) { r=>
-        r.isSuccess shouldBe true
-        r.status shouldBe "SUCCESS"
-        r.result shouldBe "Context stopped"
-      }
-    }
-
-    it ("Should return an error when stopping a context times out") {
-      val p = sendReceive ~> unmarshal[JobServerResponse]
-      val valid:Future[JobServerResponse] = p(Delete("http://127.0.0.1:9999/contexts/timeout-ctx"))
-      Await.ready(valid, Duration.create(1, TimeUnit.SECONDS)).value.get match {
-        case Success(_) => fail("Should return an exception")
-        case Failure(r: UnsuccessfulResponseException) =>
-          r.response.status.intValue shouldBe 500
-          r.response.status.isFailure shouldBe true
-        case Failure(_) => fail("Should return an UnsuccessfulResponseException")
-      }
-    }
-
     it ("Should return valid JSON when resetting a context") {
       val p = sendReceive ~> unmarshal[JobServerResponse]
       val valid:Future[JobServerResponse] = p(Put("http://127.0.0.1:9999/contexts?reset=reboot"))
@@ -298,17 +254,6 @@ with ScalatestRouteTest with HttpService with ScalaFutures with SprayJsonSupport
         r.result shouldBe "Context reset"
       }
     }
-
-    it ("Should return an error when unexpected error occures at adding context") {
-      unexpectedErrorHelpFunction(Post("http://127.0.0.1:9999/contexts/unexp-err"))
-    }
-
-    it ("Should return an error when unexpected error occures at deleting context") {
-      unexpectedErrorHelpFunction(Delete("http://127.0.0.1:9999/contexts/unexp-err"))
-    }
-
-    it ("Should return an error when unexpected error occures at getting context") {
-      unexpectedErrorHelpFunction(Get("http://127.0.0.1:9999/contexts/unexp-err"))
-    }
   }
+
 }

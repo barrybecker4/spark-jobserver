@@ -31,17 +31,18 @@ object JobDAOActor {
 
   case class SaveJobInfo(jobInfo: JobInfo) extends JobDAORequest
   case class GetJobInfos(limit: Int) extends JobDAORequest
+  case class GetJobInfosByContextId(contextId: String, jobStatuses: Option[Seq[String]]) extends JobDAORequest
 
   case class SaveJobConfig(jobId: String, jobConfig: Config) extends JobDAORequest
   case class GetJobConfig(jobId: String) extends JobDAORequest
-  case class CleanContextJobInfos(contextName: String, endTime: DateTime)
+  case class CleanContextJobInfos(contextId: String, endTime: DateTime)
 
   case class GetLastUploadTimeAndType(appName: String) extends JobDAORequest
   case class SaveContextInfo(contextInfo: ContextInfo) extends JobDAORequest
   case class GetContextInfo(id: String) extends JobDAORequest
   case class GetContextInfoByName(name: String) extends JobDAORequest
   case class GetContextInfos(limit: Option[Int] = None,
-      statusOpt: Option[String] = None) extends JobDAORequest
+      statuses: Option[Seq[String]] = None) extends JobDAORequest
 
   //Responses
   sealed trait JobDAOResponse
@@ -56,6 +57,10 @@ object JobDAOActor {
   case object InvalidJar extends JobDAOResponse
   case object JarStored extends JobDAOResponse
 
+  sealed trait SaveResponse
+  case object SavedSuccessfully extends SaveResponse
+  case class SaveFailed(error: Throwable) extends SaveResponse
+
   def props(dao: JobDAO): Props = Props(classOf[JobDAOActor], dao)
 }
 
@@ -68,7 +73,10 @@ class JobDAOActor(dao: JobDAO) extends InstrumentedActor {
 
   def wrappedReceive: Receive = {
     case SaveBinary(appName, binaryType, uploadTime, jarBytes) =>
-      sender ! SaveBinaryResult(Try(dao.saveBinary(appName, binaryType, uploadTime, jarBytes)))
+      val recipient = sender()
+      Future {
+        dao.saveBinary(appName, binaryType, uploadTime, jarBytes)
+      }.onComplete(recipient ! SaveBinaryResult(_))
 
     case DeleteBinary(appName) =>
       sender ! DeleteBinaryResult(Try(dao.deleteBinary(appName)))
@@ -81,7 +89,12 @@ class JobDAOActor(dao: JobDAO) extends InstrumentedActor {
       sender() ! BinaryPath(dao.retrieveBinaryFile(appName, binType, uploadTime))
 
     case SaveContextInfo(contextInfo) =>
-      dao.saveContextInfo(contextInfo)
+      Try(dao.saveContextInfo(contextInfo)) match {
+        case Success(_) => sender ! SavedSuccessfully
+        case Failure(t) =>
+          logger.error(s"Failed to save context (${contextInfo.id}) in DAO", t)
+          sender ! SaveFailed(t)
+      }
 
     case GetContextInfo(id) =>
       dao.getContextInfo(id).map(ContextResponse).pipeTo(sender)
@@ -89,8 +102,8 @@ class JobDAOActor(dao: JobDAO) extends InstrumentedActor {
     case GetContextInfoByName(name) =>
       dao.getContextInfoByName(name).map(ContextResponse).pipeTo(sender)
 
-    case GetContextInfos(limit, statusOpt) =>
-      dao.getContextInfos(limit, statusOpt).map(ContextInfos).pipeTo(sender)
+    case GetContextInfos(limit, statuses) =>
+      dao.getContextInfos(limit, statuses).map(ContextInfos).pipeTo(sender)
 
     case SaveJobInfo(jobInfo) =>
       dao.saveJobInfo(jobInfo)
@@ -107,7 +120,10 @@ class JobDAOActor(dao: JobDAO) extends InstrumentedActor {
     case GetLastUploadTimeAndType(appName) =>
       sender() ! LastUploadTimeAndType(dao.getLastUploadTimeAndType(appName))
 
-    case CleanContextJobInfos(contextName, endTime) =>
-      dao.cleanRunningJobInfosForContext(contextName, endTime)
+    case CleanContextJobInfos(contextId, endTime) =>
+      dao.cleanRunningJobInfosForContext(contextId, endTime)
+
+    case GetJobInfosByContextId(contextId, jobStatuses) =>
+      dao.getJobInfosByContextId(contextId, jobStatuses).map(JobInfos).pipeTo(sender)
   }
 }
