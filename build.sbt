@@ -251,7 +251,7 @@ lazy val commonSettings = Defaults.coreDefaultSettings ++ dirSettings ++ Seq(
   runScalaStyle := {
     scalastyle.in(Compile).toTask("").value
   },
-  (compile in Compile) := (compile in Compile).dependsOn.runScalaStyle).value,
+  (compile in Compile) := (compile in Compile).dependsOn(runScalaStyle).value,
   publishTo := Some("Artifactory Realm" at "http://esi-components.esi-group.com/artifactory/snapshot"),
   credentials += Credentials(Path.userHome / ".m2" / ".credentials"),
   licenses += "Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0.html"),
