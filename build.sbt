@@ -252,7 +252,7 @@ lazy val commonSettings = Defaults.coreDefaultSettings ++ dirSettings ++ Seq(
     scalastyle.in(Compile).toTask("").value
   },
   (compile in Compile) := (compile in Compile).dependsOn(runScalaStyle).value,
-  publishTo := Some("Artifactory Realm" at "http://esi-components.esi-group.com/artifactory/snapshot"),
+  publishTo := Some("Artifactory Realm" at "http://esi-components.esi-group.com/artifactory/local-maven-snapshot"),
   credentials += Credentials(Path.userHome / ".m2" / ".credentials"),
   licenses += "Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0.html"),
   publishMavenStyle := true,
