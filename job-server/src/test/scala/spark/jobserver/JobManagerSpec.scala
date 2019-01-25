@@ -2,17 +2,35 @@ package spark.jobserver
 
 import java.nio.charset.Charset
 import java.nio.file.Files
+import java.security.Permission
 
 import akka.actor.{ActorRef, ActorSystem}
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberUp}
 import akka.util.Timeout
-import org.scalatest.{BeforeAndAfter, FunSpecLike, Matchers}
-import spark.jobserver.common.akka.AkkaTestUtils
+import com.google.common.net.InetAddresses
+import org.scalatest.{BeforeAndAfter, BeforeAndAfterAll, FunSpecLike, Matchers}
 
 import scala.concurrent.Await
+import spark.jobserver.common.akka.AkkaTestUtils
+import spark.jobserver.util.HDFSClusterLike
 
-class JobManagerSpec extends FunSpecLike with Matchers with BeforeAndAfter {
+sealed case class JVMExitException(status: Int) extends SecurityException("sys.exit() is not allowed") {
+}
+
+sealed class NoExitSecurityManager extends SecurityManager {
+  override def checkPermission(perm: Permission): Unit = {}
+
+  override def checkPermission(perm: Permission, context: Object): Unit = {}
+
+  override def checkExit(status: Int): Unit = {
+    super.checkExit(status)
+    throw JVMExitException(status)
+  }
+}
+
+class JobManagerSpec extends FunSpecLike with Matchers with BeforeAndAfter
+    with BeforeAndAfterAll with HDFSClusterLike {
 
   import akka.testkit._
   import com.typesafe.config._
@@ -36,6 +54,10 @@ class JobManagerSpec extends FunSpecLike with Matchers with BeforeAndAfter {
     Files.deleteIfExists(configFile)
   }
 
+  override def beforeAll(): Unit = System.setSecurityManager(new NoExitSecurityManager)
+
+  override def afterAll(): Unit = System.setSecurityManager(null)
+
   def writeConfigFile(configMap: Map[String, Any]): String = {
     val config = ConfigFactory.parseMap(configMap.asJava).withFallback(ConfigFactory.defaultOverrides())
     Files.write(configFile,
@@ -49,15 +71,15 @@ class JobManagerSpec extends FunSpecLike with Matchers with BeforeAndAfter {
   implicit val timeout: Timeout = 3 seconds
 
   describe("starting job manager") {
-    it ("removes akka.remote.netty.tcp.hostname when cluster mode is enabled and ignore-akka-hostname is true") {
+    it ("should set hostname to empty string when Akka network strategy is used") {
       val configFileName = writeConfigFile(Map(
         "spark.submit.deployMode" -> "cluster",
-        "spark.jobserver.ignore-akka-hostname" -> "true",
+        "spark.jobserver.network-address-resolver" -> "AKKA",
         "akka.remote.netty.tcp.hostname" -> "test"
       ))
 
       def makeSystem(config: Config): ActorSystem = {
-        config.hasPath("akka.remote.netty.tcp.hostname") should be(false)
+        config.getString("akka.remote.netty.tcp.hostname") should be("")
         system
       }
 
@@ -65,21 +87,61 @@ class JobManagerSpec extends FunSpecLike with Matchers with BeforeAndAfter {
         makeSystem, waitForTerminationDummy)
     }
 
-    it ("leave akka.remote.netty.tcp.hostname when cluster mode is enabled and ignore-akka-hostname is false") {
+    it ("should not change hostname when Manual network strategy is used") {
       val configFileName = writeConfigFile(Map(
         "spark.submit.deployMode" -> "cluster",
-        "spark.jobserver.ignore-akka-hostname" -> "false",
+        "spark.jobserver.network-address-resolver" -> "manual",
         "akka.remote.netty.tcp.hostname" -> "test"
       ))
 
       def makeSystem(config: Config): ActorSystem = {
-        config.hasPath("akka.remote.netty.tcp.hostname") should be(true)
-        config.getString("akka.remote.netty.tcp.hostname") should be ("test")
+        config.getString("akka.remote.netty.tcp.hostname") should be("test")
         system
       }
 
       JobManager.start(Seq(clusterAddr, "test-manager", configFileName).toArray,
         makeSystem, waitForTerminationDummy)
+    }
+
+    it ("should set current hostname when Auto network strategy is used") {
+      val configFileName = writeConfigFile(Map(
+        "spark.submit.deployMode" -> "cluster",
+        "spark.jobserver.network-address-resolver" -> "auto",
+        "akka.remote.netty.tcp.hostname" -> "test"
+      ))
+
+      def makeSystem(config: Config): ActorSystem = {
+        val updatedHostname = config.getString("akka.remote.netty.tcp.hostname")
+        updatedHostname should not be("test")
+        InetAddresses.isInetAddress(updatedHostname) should be(true)
+        system
+      }
+
+      try {
+        JobManager.start(Seq(clusterAddr, "test-manager", configFileName).toArray,
+          makeSystem, waitForTerminationDummy)
+      } catch {
+        case _: JVMExitException =>
+          println("WARN: Cannot run this test as no valid externally accessible interface is available")
+      }
+    }
+
+    it ("should exit if unsupported network strategy is used") {
+      val configFileName = writeConfigFile(Map(
+        "spark.submit.deployMode" -> "cluster",
+        "spark.jobserver.network-address-resolver" -> "unsupported",
+        "akka.remote.netty.tcp.hostname" -> "test"
+      ))
+
+      def makeSystem(config: Config): ActorSystem = {
+        fail("Cannot reach this point as JVM should already be exited")
+        system
+      }
+
+      intercept[JVMExitException] {
+        JobManager.start(Seq(clusterAddr, "test-manager", configFileName).toArray,
+          makeSystem, waitForTerminationDummy)
+      }
     }
 
     it ("use temporary sqldao dir in cluster mode") {
@@ -171,6 +233,47 @@ class JobManagerSpec extends FunSpecLike with Matchers with BeforeAndAfter {
         makeSupervisorSystem, waitForTermination)
 
       called should be (true)
+    }
+
+    it("should exit jvm if config file cannot be loaded") {
+      failOnWrongPath("")
+      failOnWrongPath("file:wrong_path")
+      failOnWrongPath("file:/wrong_path")
+      failOnWrongPath("hdfs:///wrong_path")
+      failOnWrongPath("hdfs://localhost:8020/wrong_path")
+
+      def failOnWrongPath(configPath: String): Unit = {
+        def makeSystem(config: Config): ActorSystem = {
+          fail("Cannot reach this point as JVM should already be exited")
+          system
+        }
+
+        intercept[JVMExitException] {
+          JobManager.start(Seq(clusterAddr, "test-manager", configPath).toArray,
+            makeSystem, waitForTerminationDummy)
+        }
+      }
+    }
+
+    it("should be able to load config file from hadoop supported file systems") {
+      val configFilePath = writeConfigFile(Map(
+        "spark.jobserver.hdfs.test" -> "Wohoo!"
+      ))
+
+      super.startHDFS()
+      val configHDFSDir = s"${super.getNameNodeURI()}/spark-jobserver"
+      super.writeFileToHDFS(configFilePath, configHDFSDir)
+      val configHDFSPath = s"${configHDFSDir}/${configFile.getFileName.toString}"
+
+      JobManager.start(Seq(clusterAddr, "test-manager", configHDFSPath).toArray,
+        makeSystem, waitForTerminationDummy)
+
+      def makeSystem(config: Config): ActorSystem = {
+        config.getString("spark.jobserver.hdfs.test") should be("Wohoo!")
+        system
+      }
+
+      super.shutdownHDFS()
     }
   }
 }

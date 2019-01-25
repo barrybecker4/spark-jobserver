@@ -24,14 +24,23 @@ trait FileCacher {
   val Pattern = "\\d{8}_\\d{6}_\\d{3}".r
 
   def createBinaryName(appName: String, binaryType: BinaryType, uploadTime: DateTime): String = {
-    appName + "-" + uploadTime.toString("yyyyMMdd_hhmmss_SSS") + s".${binaryType.extension}"
+    appName + "-" + uploadTime.toString("yyyyMMdd_HHmmss_SSS") + s".${binaryType.extension}"
   }
 
-  // Cache the jar file into local file system.
+  protected def getPath(appName: String, binaryType: BinaryType, uploadTime: DateTime): Option[String] = {
+    val binFile = new File(rootDir, createBinaryName(appName, binaryType, uploadTime))
+    if(binFile.exists()) {
+      Some(binFile.getAbsolutePath)
+    } else {
+      None
+    }
+  }
+
+  // Cache the binary file into local file system.
   protected def cacheBinary(appName: String,
                             binaryType: BinaryType,
                             uploadTime: DateTime,
-                            binBytes: Array[Byte]) {
+                            binBytes: Array[Byte]): String = {
     val targetFullBinaryName = createBinaryName(appName, binaryType, uploadTime)
     val tempSuffix = ".tmp"
     val tempOutFile = File.createTempFile(targetFullBinaryName + "-", tempSuffix, new File(rootDir))
@@ -50,13 +59,17 @@ trait FileCacher {
       tempOutFileName, targetFullBinaryName: Any)
 
     val tempFile = new File(rootDir, tempOutFileName)
-    if (!tempFile.renameTo(new File(rootDir, targetFullBinaryName))) {
+    val renamedFile = new File(rootDir, targetFullBinaryName)
+    renamedFile.deleteOnExit()
+    if (!tempFile.renameTo(renamedFile)) {
       logger.debug("Renaming the temporary file {} failed, another process has probably already updated " +
         "the target file - deleting the redundant temp file", tempOutFileName)
       if (!tempFile.delete()) {
         logger.warn("Could not delete the temporary file {}", tempOutFileName)
       }
     }
+
+    renamedFile.getAbsolutePath
   }
 
   protected def cleanCacheBinaries(appName: String): Unit = {
@@ -76,5 +89,4 @@ trait FileCacher {
       binaries.foreach(f => f.delete())
     }
   }
-
 }

@@ -30,13 +30,13 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
   val jarBytes: Array[Byte] = Files.toByteArray(testJar)
   var jarFile: File = new File(
       config.getString("spark.jobserver.sqldao.rootdir"),
-      jarInfo.appName + "-" + jarInfo.uploadTime.toString("yyyyMMdd_hhmmss_SSS") + ".jar"
+      jarInfo.appName + "-" + jarInfo.uploadTime.toString("yyyyMMdd_HHmmss_SSS") + ".jar"
   )
 
   val eggBytes: Array[Byte] = Files.toByteArray(emptyEgg)
   val eggInfo: BinaryInfo = BinaryInfo("myEggBinary", BinaryType.Egg, time)
   val eggFile: File = new File(config.getString("spark.jobserver.sqldao.rootdir"),
-    eggInfo.appName + "-" + jarInfo.uploadTime.toString("yyyyMMdd_hhmmss_SSS") + ".egg")
+    eggInfo.appName + "-" + jarInfo.uploadTime.toString("yyyyMMdd_HHmmss_SSS") + ".egg")
 
   // jobInfo test data
   val jobInfoNoEndNoErr:JobInfo = genJobInfo(jarInfo, false, JobStatus.Running)
@@ -152,7 +152,7 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       jarFile.exists() should equal (false)
 
       // retrieve the jar file
-      val jarFilePath: String = dao.retrieveBinaryFile(jarInfo.appName, BinaryType.Jar, jarInfo.uploadTime)
+      val jarFilePath: String = dao.getBinaryFilePath(jarInfo.appName, BinaryType.Jar, jarInfo.uploadTime)
 
       // test
       jarFile.exists() should equal (true)
@@ -184,7 +184,7 @@ class JobSqlDAOSpec extends JobSqlDAOSpecBase with TestJarFinder with FunSpecLik
       eggFile.exists() should equal (false)
 
       // retrieve the jar file
-      val eggFilePath: String = dao.retrieveBinaryFile(eggInfo.appName, BinaryType.Egg, eggInfo.uploadTime)
+      val eggFilePath: String = dao.getBinaryFilePath(eggInfo.appName, BinaryType.Egg, eggInfo.uploadTime)
       // test
       eggFile.exists() should equal (true)
       eggFilePath should equal (eggFile.getAbsolutePath)

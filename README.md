@@ -125,7 +125,7 @@ Spark Job Server is now included in Datastax Enterprise 4.8!
 | 0.6.2       | 1.6.1         |
 | 0.7.0       | 1.6.2         |
 | 0.8.0       | 2.2.0    |
-| 0.8.1-SNAPSHOT | 2.2.0 |
+| 0.8.1-SNAPSHOT | 2.3.2 |
 
 For release notes, look in the `notes/` directory.
 
@@ -181,7 +181,7 @@ Then go ahead and start the job server using the instructions above.
 
 Let's upload the jar:
 
-    curl --data-binary @job-server-tests/target/scala-2.10/job-server-tests-$VER.jar localhost:8090/jars/test
+    curl -X POST localhost:8090/binaries/test -H "Content-Type: application/java-archive" --data-binary @job-server-tests/target/scala-2.10/job-server-tests-$VER.jar
     OK⏎
 
 #### Ad-hoc Mode - Single, Unrelated Jobs (Transient Context)
@@ -354,7 +354,7 @@ object WordCountExampleNewApi extends NewSparkJob {
 }
 ```
 
-It is much more type safe, separates context configuration, job ID, named objects, and other environment variables into a separate JobEnvironment input, and allows the validation method to return specific data for the runJob method.  See the [WordCountExample](job-server-tests/src/spark.jobserver/WordCountExample.scala) and [LongPiJob](job-server-tests/src/spark.jobserver/LongPiJob.scala) for examples.
+It is much more type safe, separates context configuration, job ID, named objects, and other environment variables into a separate JobEnvironment input, and allows the validation method to return specific data for the runJob method.  See the [WordCountExample](job-server-tests/src/main/scala/spark/jobserver/WordCountExample.scala) and [LongPiJob](job-server-tests/src/main/scala/spark/jobserver/LongPiJob.scala) for examples.
 
 Let's try running our sample job with an invalid configuration:
 

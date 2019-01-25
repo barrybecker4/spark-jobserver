@@ -1,29 +1,24 @@
 package spark.jobserver
 
-import akka.actor.{ActorSystem, ActorRef, ActorContext, Props}
-
+import akka.actor.{ActorContext, ActorNotFound, ActorRef, ActorSystem, AddressFromURIString, Props}
 import akka.util.Timeout
 import akka.pattern.ask
 import akka.cluster.Cluster
 import akka.cluster.ClusterEvent.{InitialStateAsEvents, MemberEvent}
-import akka.actor.AddressFromURIString
-
-import com.typesafe.config.{ConfigValueFactory, Config, ConfigFactory}
+import com.typesafe.config.{Config, ConfigFactory, ConfigValueFactory}
 import java.io.File
-import java.util.concurrent.TimeUnit
-import spark.jobserver.io.{
-  BinaryType, JobDAOActor, JobDAO, DataFileDAO, ContextStatus, ContextInfo, JobStatus, ErrorData}
+import java.util.concurrent.{TimeUnit, TimeoutException}
+
+import spark.jobserver.io._
 import spark.jobserver.util.ContextReconnectFailedException
 import org.joda.time.DateTime
-
 import org.slf4j.LoggerFactory
 
 import scala.collection.JavaConverters._
 import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration._
-import scala.util.{Try, Success, Failure}
+import scala.util.{Failure, Success, Try}
 import scala.collection.mutable.ListBuffer
-
 import com.google.common.annotations.VisibleForTesting
 
 /**
@@ -178,16 +173,22 @@ object JobServer {
 
   @VisibleForTesting
   def getManagerActorRef(contextInfo: ContextInfo, system: ActorSystem): Option[ActorRef] = {
-    val finiteDuration = FiniteDuration(3, SECONDS)
-    val clusterAddress = contextInfo.actorAddress.get
+    val duration = FiniteDuration(3, SECONDS)
+    val clusterAddress = contextInfo.actorAddress.getOrElse(return None)
     val address = clusterAddress + "/user/" + AkkaClusterSupervisorActor.MANAGER_ACTOR_PREFIX +
         contextInfo.id
-    val actorFut = Await.ready(system.actorSelection(address).resolveOne(finiteDuration), finiteDuration)
-    actorFut.value.get match {
-      case Success(actorRef) =>
-        logger.info(s"Found context ${contextInfo.name} -> reconnect is possible")
-        Some(actorRef)
-      case Failure(ex) => None
+    try {
+      val actorResolveFuture = system.actorSelection(address).resolveOne(duration)
+      val resolvedActorRef = Await.result(actorResolveFuture, duration)
+      logger.info(s"Found context ${contextInfo.name} -> reconnect is possible")
+      Some(resolvedActorRef)
+    } catch {
+      case ex @ (_: ActorNotFound | _: TimeoutException | _: InterruptedException) =>
+        logger.error(s"Failed to resolve actor reference for context ${contextInfo.name}", ex.getMessage)
+        None
+      case ex: Exception =>
+        logger.error("Unexpected exception occurred", ex)
+        None
     }
   }
 
@@ -223,7 +224,8 @@ object JobServer {
     val config = system.settings.config
     val daoAskTimeout = Timeout(config.getDuration("spark.jobserver.dao-timeout", TimeUnit.SECONDS).second)
     val resp = Await.result(
-        (jobDaoActor ? JobDAOActor.GetContextInfos(None, Some(Seq(ContextStatus.Running))))(daoAskTimeout).
+        (jobDaoActor ? JobDAOActor.GetContextInfos(None, Some(
+          Seq(ContextStatus.Running, ContextStatus.Stopping))))(daoAskTimeout).
         mapTo[JobDAOActor.ContextInfos], daoAskTimeout.duration)
 
     resp.contextInfos.map{ contextInfo =>
