@@ -32,18 +32,19 @@ if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE"); then
    exit 1
 fi
 
-# The following lines are added for mineset. Uncomment when adding to /3rdparty/spark/template/...
+## The following lines are added for mineset.
 #ASSEMBLY=@MINESET_OPT@/spark/dist/mineset-spark-assembly-1.0.jar
 #if [ ! -e $ASSEMBLY ]; then
 #   echo "$ASSEMBLY does not exist"
 #   exit 1
 #fi
 #JARS=@MINESET_TMP@/spark-jobserver/jars
+#if [ ! -d $JARS ]; then
+#   mkdir -p $JARS;
+#fi
 #cp -p $ASSEMBLY $JARS/mineset-spark.jar
-
 #ls -1 @MINESET_TMP@/spark-jobserver/sqldao/data/mineset-spark-*.jar | \
 #    grep -v `date +%Y-%m-%d` | xargs rm -f
-
 
 
 cmd='$SPARK_HOME/bin/spark-submit --class $MAIN --driver-memory $JOBSERVER_MEMORY

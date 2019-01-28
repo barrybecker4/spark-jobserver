@@ -172,9 +172,6 @@ class JobSqlDAO(config: Config) extends JobDAO with FileCacher {
     }
 
     // log it into database
-    // BB: To avoid potential problems, don't put the binary in the db if it is large.
-    val bytes = if (binBytes.length > 100000) Array[Byte]() else binBytes
-
     if (Await.result(insertBinaryInfo(
       BinaryInfo(appName, binaryType, uploadTime),
       binBytes), daoAskTimeout.duration) == 0) {
